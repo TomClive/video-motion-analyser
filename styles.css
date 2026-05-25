@@ -1097,9 +1097,9 @@ select.btn-file-select option {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-height: 30px;
-  padding: 5px 9px;
+  padding: 5px 10px;
   border: 1px solid var(--border-color);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.025);
@@ -1112,8 +1112,18 @@ select.btn-file-select option {
   display: none;
 }
 
+.stack-control-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.stack-control-row label {
+  min-width: 44px;
+}
+
 .stack-scale-control input {
-  width: 118px;
+  width: 108px;
   accent-color: var(--purple);
 }
 

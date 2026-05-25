@@ -23,6 +23,7 @@ let state = {
   timelineVizMode: 'curve', // 'curve' | 'contact-sheet' | 'stack'
   timelineMaximized: false,
   stackScale: 1.25,
+  stackSpacing: 1,
   onionOpacity: 0.5,
   anomalyListExpanded: false,
   
@@ -202,6 +203,14 @@ function setupEventListeners() {
     stackScaleValue.textContent = `${e.target.value}%`;
     if (state.timelineVizMode === 'stack') drawTemporalStack();
   });
+
+  const stackSpacingSlider = document.getElementById('input-stack-spacing');
+  const stackSpacingValue = document.getElementById('val-stack-spacing');
+  stackSpacingSlider.addEventListener('input', (e) => {
+    state.stackSpacing = parseInt(e.target.value, 10) / 100;
+    stackSpacingValue.textContent = `${e.target.value}%`;
+    if (state.timelineVizMode === 'stack') drawTemporalStack();
+  });
   
   const btnCompareVideo = document.getElementById('btn-compare-video');
   const inputCompareVideo = document.getElementById('input-compare-video');
@@ -309,6 +318,7 @@ function resetApp() {
   state.timelineVizMode = 'curve';
   state.timelineMaximized = false;
   state.stackScale = 1.25;
+  state.stackSpacing = 1;
   state.sourceFps = 24;
   state.playbackFps = 24;
   state.loadedFileName = '';
@@ -319,6 +329,8 @@ function resetApp() {
   document.getElementById('select-playback-fps').value = '24';
   document.getElementById('input-stack-scale').value = '125';
   document.getElementById('val-stack-scale').textContent = '125%';
+  document.getElementById('input-stack-spacing').value = '100';
+  document.getElementById('val-stack-spacing').textContent = '100%';
   setTimelineVizMode('curve');
   setTimelineMaximized(false);
   document.getElementById('frame-grid-container').innerHTML = '';
@@ -340,7 +352,7 @@ function setWorkspaceActive(active) {
     'btn-view-diff', 'select-playback-fps',
     'btn-toggle-anomaly-list', 'btn-compare-video',
     'btn-viz-curve', 'btn-viz-contact-sheet', 'btn-viz-stack',
-    'btn-toggle-timeline-max', 'input-stack-scale',
+    'btn-toggle-timeline-max', 'input-stack-scale', 'input-stack-spacing',
     'btn-export-resolve-markers', 'btn-export-premiere-edl'
   ];
   
@@ -1888,12 +1900,14 @@ function drawTemporalStack() {
   const img = state.frames[state.currentIndex].img;
   const aspect = img.width / Math.max(img.height, 1);
   const stackScale = state.stackScale || 1;
+  const stackSpacing = state.stackSpacing || 1;
   const maxCardW = w * 0.78;
   const maxCardH = h * 0.84;
   const baseCardH = Math.max(54, Math.min(150 * stackScale, maxCardH, maxCardW / aspect));
   const baseCardW = baseCardH * aspect;
-  const stepX = Math.max(12, Math.min(42, w / 58)) * Math.min(stackScale, 2.6);
-  const stepY = -Math.max(5, Math.min(20, h / 46)) * Math.min(stackScale, 2.6);
+  const scaleSpread = Math.min(stackScale, 2.6);
+  const stepX = Math.max(12, Math.min(42, w / 58)) * scaleSpread * stackSpacing;
+  const stepY = -Math.max(5, Math.min(20, h / 46)) * scaleSpread * stackSpacing;
   const after = Math.min(Math.max(16, Math.round(32 / stackScale)), state.frames.length - state.currentIndex - 1);
   const start = state.currentIndex;
   const end = state.currentIndex + after;

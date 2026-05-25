@@ -334,9 +334,16 @@
             <button id="btn-viz-stack" class="view-mode-btn" type="button" disabled>Stack</button>
           </div>
           <div id="stack-scale-control" class="stack-scale-control hidden">
-            <label for="input-stack-scale">Stack Size</label>
-            <input id="input-stack-scale" type="range" min="70" max="400" step="5" value="125" disabled>
-            <span id="val-stack-scale">125%</span>
+            <div class="stack-control-row">
+              <label for="input-stack-scale">Size</label>
+              <input id="input-stack-scale" type="range" min="70" max="400" step="5" value="125" disabled>
+              <span id="val-stack-scale">125%</span>
+            </div>
+            <div class="stack-control-row">
+              <label for="input-stack-spacing">Spacing</label>
+              <input id="input-stack-spacing" type="range" min="25" max="180" step="5" value="100" disabled>
+              <span id="val-stack-spacing">100%</span>
+            </div>
           </div>
           <button id="btn-toggle-timeline-max" class="timeline-max-btn" type="button" disabled title="Maximise visualisation panel">⛶ Maximise</button>
           <!-- Legend markers -->
