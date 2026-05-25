@@ -1,5 +1,5 @@
 {
-  "name": "seedance-frame-fixer",
+  "name": "video-motion-analyser",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -10,5 +10,8 @@
   },
   "devDependencies": {
     "vite": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.60.4"
   }
 }

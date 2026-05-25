@@ -3,11 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SeeDance Frame Fixer - AI Animation Motion Smoother</title>
-  <meta name="description" content="A powerful browser-based tool to analyze and fix duplicate frames and motion jumps in AI-generated animations.">
+  <title>Video Motion Curve & Anomaly Analyser</title>
+  <meta name="description" content="A browser-based tool to inspect video motion cadence, duplicate frames, and temporal anomaly patterns.">
   <link rel="stylesheet" href="styles.css">
-  <!-- Load JSZip library via CDN for client-side zipping of image sequences -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 <body>
 
@@ -15,9 +13,9 @@
   <div id="welcome-overlay" class="full-overlay">
     <div class="overlay-content glass-panel">
       <div class="overlay-hero">
-        <div class="overlay-logo">S</div>
-        <h1 class="overlay-title">SeeDance Frame Fixer</h1>
-        <p class="overlay-subtitle">AI-generated animation smoothing & temporal restoration tool</p>
+        <div class="overlay-logo">M</div>
+        <h1 class="overlay-title">Video Motion Curve Analyser</h1>
+        <p class="overlay-subtitle">Inspect motion cadence, duplicate frames, and temporal anomalies.</p>
       </div>
 
       <!-- Drag & Drop Area -->
@@ -36,6 +34,15 @@
           </label>
           <input type="file" id="folder-input-welcome" webkitdirectory directory multiple style="display: none;">
         </div>
+        <div class="source-fps-setting">
+          <label for="select-source-fps">Source FPS</label>
+          <select id="select-source-fps" class="btn-file-select">
+            <option value="12">12</option>
+            <option value="24" selected>24</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+          </select>
+        </div>
       </div>
 
       <!-- Demo Option -->
@@ -44,7 +51,7 @@
           🔮 No footage on hand?
         </h3>
         <p class="mock-generator-desc">
-          Generate an in-memory 60fps demo sequence containing simulated motion, duplicate frames, and motion jumps to see the analyzer and fixer work!
+          Generate an in-memory demo sequence containing simulated motion, duplicate frames, and a hard temporal spike to inspect the analyser.
         </p>
         <button id="btn-load-demo" class="btn-action primary">
           Load Interactive Demo Sequence
@@ -70,10 +77,10 @@
   <!-- Header Navigation -->
   <header>
     <div class="logo-section">
-      <div class="logo-icon">S</div>
+      <div class="logo-icon">M</div>
       <div class="logo-text">
-        <h1>SeeDance Frame Fixer</h1>
-        <span>Motion Restoration Suite</span>
+        <h1>Video Motion Curve Analyser</h1>
+        <span>Cadence & Anomaly Inspector</span>
       </div>
     </div>
     
@@ -104,7 +111,7 @@
 
       <!-- Analysis Settings -->
       <section class="sidebar-section">
-        <h3>⚙️ Detection Settings</h3>
+        <h3>⚙️ Motion Analysis Settings</h3>
         
         <!-- Duplicate Threshold -->
         <div class="parameter-group">
@@ -119,11 +126,11 @@
         <!-- Jump Threshold -->
         <div class="parameter-group">
           <div class="parameter-info">
-            <span class="parameter-label">Motion Jump Sensitivity</span>
+            <span class="parameter-label">Cut / Spike Sensitivity</span>
             <span id="val-jump-thresh" class="parameter-value">2.5x</span>
           </div>
           <input type="range" id="input-jump-thresh" class="parameter-input" min="1.5" max="5.0" step="0.1" value="2.5">
-          <p class="parameter-desc">Threshold factor (relative to median neighbor frames) to trigger a dropped frame spike alert.</p>
+          <p class="parameter-desc">Flags abrupt transitions for review. These may be real cuts, angle changes, or dropped-frame spikes.</p>
         </div>
 
         <button id="btn-reanalyze" class="btn-action secondary" style="margin-top: 12px; width: 100%;" disabled>
@@ -133,7 +140,7 @@
 
       <!-- Diagnostics & Anomalies Reports -->
       <section class="sidebar-section" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-        <h3>🚨 Diagnostic Report</h3>
+        <h3>🚨 Motion Anomalies</h3>
         
         <!-- Diagnostic Statistics Cards -->
         <div class="diagnostic-stats">
@@ -143,9 +150,13 @@
           </div>
           <div id="stat-card-jumps" class="stat-card">
             <div id="stat-jumps-count" class="stat-num jump-color">0</div>
-            <div class="stat-label">Motion Jumps</div>
+            <div class="stat-label">Cut / Spike</div>
           </div>
         </div>
+
+        <button id="btn-toggle-anomaly-list" class="btn-list-toggle" type="button" disabled>
+          Show Details
+        </button>
 
         <!-- Scrollable Anomaly List -->
         <div id="anomaly-list-container" style="flex: 1; overflow-y: auto;">
@@ -155,32 +166,33 @@
         </div>
       </section>
 
-      <!-- Pro Integration & Export Suite -->
+      <!-- Curve Comparison -->
       <section class="sidebar-section">
-        <h3>🔌 Pro NLE Integration Suite</h3>
+        <h3>Curve Compare</h3>
         <div class="action-suite">
-          <button id="btn-autofix-dups" class="btn-action secondary btn-danger-outline" disabled>
-            ⚡ Auto-Fix All Duplicates
+          <button id="btn-compare-video" class="btn-action secondary" disabled>
+            Compare Another Video
           </button>
-          <button id="btn-export-video" class="btn-action primary" disabled>
-            🎥 Export Repaired Video (MP4)
+          <button id="btn-clear-compare" class="btn-action secondary" style="display: none;" disabled>
+            Clear Comparison
           </button>
+          <input type="file" id="input-compare-video" accept="video/*" style="display: none;">
+        </div>
+        <div id="compare-report" class="compare-report empty">
+          Load another MP4 to overlay its motion curve against this sequence.
+        </div>
+      </section>
+
+      <!-- Analysis Export Suite -->
+      <section class="sidebar-section">
+        <h3>📤 Analysis Exports</h3>
+        <div class="action-suite">
           <button id="btn-export-resolve-markers" class="btn-action secondary" disabled>
             🔵 Export Resolve Markers (CSV)
           </button>
           <button id="btn-export-premiere-edl" class="btn-action secondary" disabled>
             📜 Export Premiere/AE EDL
           </button>
-          <button id="btn-export-damaged-zip" class="btn-action secondary" disabled>
-            📦 Export Damaged Ranges (ZIP)
-          </button>
-          <button id="btn-export-sequence" class="btn-action secondary" disabled>
-            📦 Export Full ZIP (Lossless)
-          </button>
-          <button id="btn-import-repaired" class="btn-action secondary" disabled>
-            📥 Import AI Repaired Frames
-          </button>
-          <input type="file" id="input-import-repaired" accept="image/png, image/jpeg" multiple style="display: none;">
         </div>
       </section>
     </aside>
@@ -240,8 +252,16 @@
               </label>
 
               <!-- Playback Speed (FPS) Selector -->
-              <select id="select-playback-fps" class="btn-file-select" style="max-width: 90px; padding: 6px;" disabled>
+              <select id="select-playback-fps" class="btn-file-select playback-fps-select" disabled>
+                <option value="0.5">0.5 FPS</option>
+                <option value="1">1 FPS</option>
+                <option value="2">2 FPS</option>
+                <option value="3">3 FPS</option>
+                <option value="4">4 FPS</option>
+                <option value="6">6 FPS</option>
+                <option value="8">8 FPS</option>
                 <option value="12">12 FPS</option>
+                <option value="16">16 FPS</option>
                 <option value="24" selected>24 FPS</option>
                 <option value="30">30 FPS</option>
                 <option value="60">60 FPS</option>
@@ -257,9 +277,9 @@
           </div>
         </div>
 
-        <!-- Right Side Column: Detailed Inspection & Fix Settings -->
+        <!-- Right Side Column: Detailed Inspection -->
         <aside class="inspection-panel">
-          <h4 class="font-heading">🔍 Frame Detail Inspector</h4>
+          <h4 class="font-heading">🔍 Frame Inspector</h4>
           
           <div class="inspection-card">
             
@@ -288,50 +308,6 @@
               </div>
             </div>
 
-            <!-- Client-Side Interpolation Settings Card -->
-            <div class="interpolation-settings-card card-dark" style="margin-top: 12px; background: rgba(20, 24, 40, 0.4); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
-              <h5 style="margin: 0; font-size: 12px; text-transform: uppercase; color: var(--text-primary); letter-spacing: 0.05em; font-weight: 700; display: flex; align-items: center; gap: 6px;">⚙️ Local Interpolation Settings</h5>
-              
-              <!-- Dropdown for Method -->
-              <div class="parameter-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-                <label for="select-interpolation-method" style="font-size: 11px; color: var(--text-muted); cursor: pointer;">Algorithm:</label>
-                <select id="select-interpolation-method" class="btn-file-select" style="flex: 1; padding: 4px; font-size: 11px; background: rgba(10, 10, 15, 0.6); border: 1px solid var(--border-color); border-radius: 4px; color: white; cursor: pointer;">
-                  <option value="linear">Linear Cross-Fade (Standard)</option>
-                  <option value="shutter">Cinematic Shutter (Motion Blur)</option>
-                  <option value="flow">Optical Flow Lite (Block-Warp)</option>
-                </select>
-              </div>
-              
-              <!-- Parameters for Cinematic Shutter -->
-              <div id="shutter-params" class="method-params" style="display: none;">
-                <div class="parameter-row" style="display: flex; flex-direction: column; gap: 4px;">
-                  <div class="parameter-labels" style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted);">
-                    <span>Shutter Blur Samples:</span>
-                    <span id="val-shutter-samples" style="font-family: monospace; color: var(--primary-color);">5</span>
-                  </div>
-                  <input type="range" id="input-shutter-samples" min="3" max="9" step="2" value="5" style="width: 100%; accent-color: var(--primary-color); cursor: pointer;">
-                </div>
-              </div>
-              
-              <!-- Parameters for Optical Flow Lite -->
-              <div id="flow-params" class="method-params" style="display: none; flex-direction: column; gap: 8px;">
-                <div class="parameter-row" style="display: flex; flex-direction: column; gap: 4px;">
-                  <div class="parameter-labels" style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted);">
-                    <span>Block Grid Size:</span>
-                    <span id="val-flow-block-size" style="font-family: monospace; color: var(--primary-color);">16px</span>
-                  </div>
-                  <input type="range" id="input-flow-block-size" min="8" max="32" step="8" value="16" style="width: 100%; accent-color: var(--primary-color); cursor: pointer;">
-                </div>
-                <div class="parameter-row" style="display: flex; flex-direction: column; gap: 4px;">
-                  <div class="parameter-labels" style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted);">
-                    <span>Search Range:</span>
-                    <span id="val-flow-search-range" style="font-family: monospace; color: var(--primary-color);">16px</span>
-                  </div>
-                  <input type="range" id="input-flow-search-range" min="8" max="32" step="8" value="16" style="width: 100%; accent-color: var(--primary-color); cursor: pointer;">
-                </div>
-              </div>
-            </div>
-
             <!-- Diagnostics Metrics of Selected Frame -->
             <div class="anomalies-fixing-card">
               <div id="inspector-anomaly-header" class="anomaly-type-title duplicate">
@@ -339,25 +315,8 @@
                 <span id="inspector-anomaly-type">Select Frame</span>
               </div>
               <p id="inspector-anomaly-desc" class="anomaly-action-desc">
-                Select a frame or tap an anomaly on the diagnostic list to view metrics, visual differences, and invoke frame operations.
+                Select a frame or tap an anomaly on the list to inspect frame-to-frame motion metrics.
               </p>
-              
-              <div class="action-suite" style="margin-top: 12px;">
-                <button id="btn-fix-single-interpolate" class="btn-action primary" disabled>
-                  💡 Interpolate Frame
-                </button>
-                <button id="btn-fix-single-delete" class="btn-action secondary btn-danger-outline" disabled>
-                  🗑️ Delete Frame
-                </button>
-              </div>
-            </div>
-
-            <!-- AI Recommended Workflow Blueprint Card -->
-            <div id="ai-blueprint-card" class="ai-blueprint-card" style="margin-top: 12px; display: none; background: rgba(13, 27, 42, 0.4); border: 1px solid rgba(0, 180, 216, 0.3); border-radius: 8px; padding: 12px; flex-direction: column; gap: 8px;">
-              <h5 style="margin: 0; font-size: 12px; text-transform: uppercase; color: #00b4d8; letter-spacing: 0.05em; font-weight: 700; display: flex; align-items: center; gap: 6px;">⚡ AI Recommend Blueprint</h5>
-              <div id="ai-blueprint-content" style="font-size: 11px; color: var(--text-secondary); line-height: 1.4;">
-                <!-- Dynamically populated -->
-              </div>
             </div>
           </div>
         </aside>
@@ -367,8 +326,19 @@
       <section class="timeline-panel">
         <div class="timeline-header">
           <div class="timeline-title">
-            <span>📈 Motion Curve & Anomalies Chart</span>
+            <span id="timeline-title-label">📈 Motion Curve & Cadence Chart</span>
           </div>
+          <div class="timeline-view-toggle view-mode-selector" role="group" aria-label="Timeline visualisation mode">
+            <button id="btn-viz-curve" class="view-mode-btn active" type="button" disabled>Curve</button>
+            <button id="btn-viz-contact-sheet" class="view-mode-btn" type="button" disabled>Frame Grid</button>
+            <button id="btn-viz-stack" class="view-mode-btn" type="button" disabled>Stack</button>
+          </div>
+          <div id="stack-scale-control" class="stack-scale-control hidden">
+            <label for="input-stack-scale">Stack Size</label>
+            <input id="input-stack-scale" type="range" min="70" max="400" step="5" value="125" disabled>
+            <span id="val-stack-scale">125%</span>
+          </div>
+          <button id="btn-toggle-timeline-max" class="timeline-max-btn" type="button" disabled title="Maximise visualisation panel">⛶ Maximise</button>
           <!-- Legend markers -->
           <div class="timeline-legend">
             <div class="legend-item">
@@ -385,11 +355,11 @@
             </div>
             <div class="legend-item">
               <div class="legend-dot jump"></div>
-              <span>Motion Jump</span>
+              <span>Cut / Spike Candidate</span>
             </div>
             <div class="legend-item">
-              <div class="legend-dot repaired"></div>
-              <span>Repaired / Interpolated</span>
+              <div class="legend-dot compare"></div>
+              <span>Comparison Curve</span>
             </div>
           </div>
         </div>
@@ -397,6 +367,10 @@
         <div class="timeline-body">
           <div class="timeline-canvas-container">
             <canvas id="timeline-canvas" class="timeline-canvas"></canvas>
+          </div>
+          <div id="frame-grid-container" class="frame-grid-container hidden" aria-label="Chronological frame grid"></div>
+          <div class="temporal-stack-container hidden">
+            <canvas id="temporal-stack-canvas" class="temporal-stack-canvas" aria-label="Temporal frame stack"></canvas>
           </div>
         </div>
       </section>

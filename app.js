@@ -1,12 +1,12 @@
 /**
- * SeeDance Frame Fixer
+ * Video Motion Curve Analyser
  * Core Application Logic
  */
 
 // Global State
 let state = {
   originalFrames: [], // Array of { name, img, blob, file }
-  frames: [],         // Active frames being edited/fixed
+  frames: [],         // Active frames being analyzed
   diffs: [],          // Diff values between frames: diffs[i] is difference between frames[i-1] and frames[i]
   anomalies: [],      // Detected anomalies: { index, type: 'duplicate'|'jump', severity, description }
   
@@ -19,22 +19,28 @@ let state = {
   
   // Viewer Options
   viewMode: 'normal', // 'normal' | 'onion' | 'diff'
+  timelineVizMode: 'curve', // 'curve' | 'contact-sheet' | 'stack'
+  timelineMaximized: false,
+  stackScale: 1.25,
   onionOpacity: 0.5,
+  anomalyListExpanded: false,
   
   // Analysis Parameters
   dupThreshold: 0.5,   // in % difference
-  jumpThreshold: 2.5,  // multiplier of local median
-  
-  // Advanced Interpolation Configuration
-  interpolationMethod: 'linear', // 'linear' | 'shutter' | 'flow'
-  shutterSamples: 5,
-  flowBlockSize: 16,
-  flowSearchRange: 16,
+  jumpThreshold: 2.5,  // multiplier of local median for cut/spike review candidates
   
   // File Tracking
   loadedFileName: '',
   loadedFileType: '', // 'video' | 'folder' | 'demo'
-  originalVideoFile: null
+  originalVideoFile: null,
+  
+  // Comparison Tracking
+  comparison: {
+    fileName: '',
+    frames: [],
+    diffs: [],
+    report: null
+  }
 };
 
 // Canvas references
@@ -42,6 +48,9 @@ let viewportCanvas = null;
 let viewportCtx = null;
 let timelineCanvas = null;
 let timelineCtx = null;
+let temporalStackCanvas = null;
+let temporalStackCtx = null;
+let temporalStackHitboxes = [];
 
 // Inspector Canvas references
 let prevCanvas = null;
@@ -69,6 +78,9 @@ function initElements() {
   
   timelineCanvas = document.getElementById('timeline-canvas');
   timelineCtx = timelineCanvas.getContext('2d');
+
+  temporalStackCanvas = document.getElementById('temporal-stack-canvas');
+  temporalStackCtx = temporalStackCanvas.getContext('2d');
   
   prevCanvas = document.getElementById('inspector-prev-canvas');
   prevCtx = prevCanvas.getContext('2d');
@@ -108,6 +120,11 @@ function setupEventListeners() {
     if (e.target.files.length > 0) handleFolderUpload(e.target.files);
   });
   
+  document.getElementById('select-source-fps').addEventListener('change', (e) => {
+    state.playbackFps = parseInt(e.target.value, 10) || 24;
+    document.getElementById('select-playback-fps').value = state.playbackFps.toString();
+  });
+  
   // Reset App
   document.getElementById('btn-reset-app').addEventListener('click', resetApp);
   
@@ -127,7 +144,7 @@ function setupEventListeners() {
   });
   
   document.getElementById('select-playback-fps').addEventListener('change', (e) => {
-    state.playbackFps = parseInt(e.target.value, 10);
+    state.playbackFps = parseFloat(e.target.value) || 24;
     if (state.isPlaying) {
       pause();
       play();
@@ -167,76 +184,53 @@ function setupEventListeners() {
     analyzeSequence();
   });
   
-  // Fix Suite Buttons
-  document.getElementById('btn-autofix-dups').addEventListener('click', autoFixAllDuplicates);
-  document.getElementById('btn-export-sequence').addEventListener('click', exportRepairedSequence);
-  document.getElementById('btn-export-video').addEventListener('click', exportRepairedVideo);
+  document.getElementById('btn-toggle-anomaly-list').addEventListener('click', toggleAnomalyList);
+
+  document.getElementById('btn-viz-curve').addEventListener('click', () => setTimelineVizMode('curve'));
+  document.getElementById('btn-viz-contact-sheet').addEventListener('click', () => setTimelineVizMode('contact-sheet'));
+  document.getElementById('btn-viz-stack').addEventListener('click', () => setTimelineVizMode('stack'));
+  document.getElementById('btn-toggle-timeline-max').addEventListener('click', toggleTimelineMaximized);
+
+  const stackScaleSlider = document.getElementById('input-stack-scale');
+  const stackScaleValue = document.getElementById('val-stack-scale');
+  stackScaleSlider.addEventListener('input', (e) => {
+    state.stackScale = parseInt(e.target.value, 10) / 100;
+    stackScaleValue.textContent = `${e.target.value}%`;
+    if (state.timelineVizMode === 'stack') drawTemporalStack();
+  });
   
-  // NLE Exporter bindings
-  document.getElementById('btn-export-resolve-markers').addEventListener('click', exportResolveMarkers);
-  document.getElementById('btn-export-premiere-edl').addEventListener('click', exportPremiereEDL);
-  document.getElementById('btn-export-damaged-zip').addEventListener('click', exportDamagedZIP);
-  
-  // Pro NLE integration bindings: Import AI Repaired Frames
-  const btnImportRepaired = document.getElementById('btn-import-repaired');
-  const inputImportRepaired = document.getElementById('input-import-repaired');
-  if (btnImportRepaired && inputImportRepaired) {
-    btnImportRepaired.addEventListener('click', () => {
-      inputImportRepaired.click();
+  const btnCompareVideo = document.getElementById('btn-compare-video');
+  const inputCompareVideo = document.getElementById('input-compare-video');
+  const btnClearCompare = document.getElementById('btn-clear-compare');
+  if (btnCompareVideo && inputCompareVideo) {
+    btnCompareVideo.addEventListener('click', () => inputCompareVideo.click());
+    inputCompareVideo.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleComparisonVideoFile(e.target.files[0]);
+      e.target.value = '';
     });
-    inputImportRepaired.addEventListener('change', importRepairedFrames);
+  }
+  if (btnClearCompare) {
+    btnClearCompare.addEventListener('click', clearComparison);
   }
   
-  // Advanced Interpolation bindings
-  const selectMethod = document.getElementById('select-interpolation-method');
-  const shutterParams = document.getElementById('shutter-params');
-  const flowParams = document.getElementById('flow-params');
-  
-  selectMethod.addEventListener('change', (e) => {
-    state.interpolationMethod = e.target.value;
-    shutterParams.style.display = (state.interpolationMethod === 'shutter') ? 'block' : 'none';
-    flowParams.style.display = (state.interpolationMethod === 'flow') ? 'flex' : 'none';
-  });
-  
-  const shutterSlider = document.getElementById('input-shutter-samples');
-  const shutterDisplay = document.getElementById('val-shutter-samples');
-  shutterSlider.addEventListener('input', (e) => {
-    state.shutterSamples = parseInt(e.target.value, 10);
-    shutterDisplay.textContent = state.shutterSamples;
-  });
-  
-  const blockSizeSlider = document.getElementById('input-flow-block-size');
-  const blockSizeDisplay = document.getElementById('val-flow-block-size');
-  blockSizeSlider.addEventListener('input', (e) => {
-    state.flowBlockSize = parseInt(e.target.value, 10);
-    blockSizeDisplay.textContent = `${state.flowBlockSize}px`;
-  });
-  
-  const searchRangeSlider = document.getElementById('input-flow-search-range');
-  const searchRangeDisplay = document.getElementById('val-flow-search-range');
-  searchRangeSlider.addEventListener('input', (e) => {
-    state.flowSearchRange = parseInt(e.target.value, 10);
-    searchRangeDisplay.textContent = `${state.flowSearchRange}px`;
-  });
-  
-  // Single Frame Repair Buttons
-  document.getElementById('btn-fix-single-interpolate').addEventListener('click', () => {
-    interpolateSingleFrame(state.currentIndex);
-  });
-  document.getElementById('btn-fix-single-delete').addEventListener('click', () => {
-    deleteSingleFrame(state.currentIndex);
-  });
+  // Analysis marker exporter bindings
+  document.getElementById('btn-export-resolve-markers').addEventListener('click', exportResolveMarkers);
+  document.getElementById('btn-export-premiere-edl').addEventListener('click', exportPremiereEDL);
   
   // Resize timeline canvas on window resize
   window.addEventListener('resize', () => {
     resizeTimelineCanvas();
-    drawTimeline();
+    resizeTemporalStackCanvas();
+    renderTimelineVisualisation();
   });
+
+  document.addEventListener('keydown', handleKeyboardShortcuts);
 }
 
 // Initialize and size Timeline Canvas
 function initTimelineCanvas() {
   resizeTimelineCanvas();
+  resizeTemporalStackCanvas();
   
   // Mouse events on timeline for scrubbing
   let isDragging = false;
@@ -269,13 +263,33 @@ function initTimelineCanvas() {
   window.addEventListener('mouseup', () => {
     isDragging = false;
   });
+
+  temporalStackCanvas.addEventListener('click', (e) => {
+    if (state.frames.length === 0 || state.timelineVizMode !== 'stack') return;
+
+    const rect = temporalStackCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const hit = [...temporalStackHitboxes].reverse().find(box =>
+      x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h
+    );
+
+    if (hit) selectFrame(hit.index);
+  });
 }
 
 function resizeTimelineCanvas() {
   const container = timelineCanvas.parentElement;
   timelineCanvas.width = container.clientWidth * window.devicePixelRatio;
   timelineCanvas.height = container.clientHeight * window.devicePixelRatio;
-  timelineCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  timelineCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+}
+
+function resizeTemporalStackCanvas() {
+  const container = temporalStackCanvas.parentElement;
+  temporalStackCanvas.width = container.clientWidth * window.devicePixelRatio;
+  temporalStackCanvas.height = container.clientHeight * window.devicePixelRatio;
+  temporalStackCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
 }
 
 // Reset UI state to start
@@ -286,9 +300,22 @@ function resetApp() {
   state.diffs = [];
   state.anomalies = [];
   state.currentIndex = 0;
+  state.anomalyListExpanded = false;
+  state.timelineVizMode = 'curve';
+  state.timelineMaximized = false;
+  state.stackScale = 1.25;
+  state.playbackFps = 24;
   state.loadedFileName = '';
   state.loadedFileType = '';
   state.originalVideoFile = null;
+  clearComparison(false);
+  document.getElementById('select-source-fps').value = '24';
+  document.getElementById('select-playback-fps').value = '24';
+  document.getElementById('input-stack-scale').value = '125';
+  document.getElementById('val-stack-scale').textContent = '125%';
+  setTimelineVizMode('curve');
+  setTimelineMaximized(false);
+  document.getElementById('frame-grid-container').innerHTML = '';
   
   // Hide workspace items, show welcome overlay
   document.getElementById('welcome-overlay').classList.remove('hidden');
@@ -296,16 +323,19 @@ function resetApp() {
   
   // Disable actions
   setWorkspaceActive(false);
+  updateAnomalyListToggle();
   updateStatus("No Sequence Loaded", "inactive");
 }
 
 function setWorkspaceActive(active) {
   const elements = [
     'btn-reanalyze', 'btn-play-toggle', 'btn-play-first', 'btn-play-last', 
-    'btn-play-prev', 'btn-play-next', 'btn-view-normal', 'btn-view-onion', 
-    'btn-view-diff', 'select-playback-fps', 'btn-autofix-dups', 
-    'btn-export-resolve-markers', 'btn-export-premiere-edl', 'btn-export-damaged-zip',
-    'btn-export-sequence', 'btn-export-video', 'btn-import-repaired'
+    'btn-play-prev', 'btn-play-next', 'btn-view-normal', 'btn-view-onion',
+    'btn-view-diff', 'select-playback-fps',
+    'btn-toggle-anomaly-list', 'btn-compare-video',
+    'btn-viz-curve', 'btn-viz-contact-sheet', 'btn-viz-stack',
+    'btn-toggle-timeline-max', 'input-stack-scale',
+    'btn-export-resolve-markers', 'btn-export-premiere-edl'
   ];
   
   elements.forEach(id => {
@@ -324,6 +354,161 @@ function updateStatus(text, type) {
   if (type === "active") statusDot.classList.add("active");
   if (type === "success") statusDot.classList.add("success");
   if (type === "processing") statusDot.classList.add("processing");
+}
+
+function setTimelineVizMode(mode) {
+  state.timelineVizMode = mode;
+
+  const isGrid = mode === 'contact-sheet';
+  const isStack = mode === 'stack';
+  const curveButton = document.getElementById('btn-viz-curve');
+  const gridButton = document.getElementById('btn-viz-contact-sheet');
+  const stackButton = document.getElementById('btn-viz-stack');
+  const canvasContainer = document.querySelector('.timeline-canvas-container');
+  const gridContainer = document.getElementById('frame-grid-container');
+  const stackContainer = document.querySelector('.temporal-stack-container');
+  const stackScaleControl = document.getElementById('stack-scale-control');
+  const titleLabel = document.getElementById('timeline-title-label');
+  const legend = document.querySelector('.timeline-legend');
+
+  if (curveButton) curveButton.classList.toggle('active', mode === 'curve');
+  if (gridButton) gridButton.classList.toggle('active', isGrid);
+  if (stackButton) stackButton.classList.toggle('active', isStack);
+  if (canvasContainer) canvasContainer.classList.toggle('hidden', mode !== 'curve');
+  if (gridContainer) gridContainer.classList.toggle('hidden', !isGrid);
+  if (stackContainer) stackContainer.classList.toggle('hidden', !isStack);
+  if (stackScaleControl) stackScaleControl.classList.toggle('hidden', !isStack);
+  if (titleLabel) {
+    titleLabel.textContent = isGrid
+      ? 'Frame Grid & Duplicate Map'
+      : (isStack ? 'Temporal Stack Playback' : '📈 Motion Curve & Cadence Chart');
+  }
+  if (legend) legend.classList.toggle('hidden', isGrid || isStack);
+
+  if (isGrid) {
+    renderFrameGrid();
+  } else if (isStack) {
+    resizeTemporalStackCanvas();
+    drawTemporalStack();
+  } else {
+    resizeTimelineCanvas();
+    renderTimelineVisualisation();
+  }
+}
+
+function renderFrameGrid() {
+  const container = document.getElementById('frame-grid-container');
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  if (state.frames.length === 0) return;
+
+  const duplicateIndexes = new Set(state.anomalies.filter(a => a.type === 'duplicate').map(a => a.index));
+  const jumpIndexes = new Set(state.anomalies.filter(a => a.type === 'jump').map(a => a.index));
+  const grid = document.createElement('div');
+  grid.className = 'frame-grid';
+
+  state.frames.forEach((frame, index) => {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'frame-tile';
+    tile.dataset.index = index.toString();
+
+    const isDuplicate = duplicateIndexes.has(index);
+    const isJump = jumpIndexes.has(index);
+    if (isDuplicate) tile.classList.add('duplicate');
+    if (isJump) tile.classList.add('jump');
+    if (index === state.currentIndex) tile.classList.add('active');
+
+    const img = document.createElement('img');
+    img.src = frame.img.src;
+    img.alt = `Frame ${index}`;
+    img.loading = 'lazy';
+    tile.appendChild(img);
+
+    const indexLabel = document.createElement('span');
+    indexLabel.className = 'frame-tile-index';
+    indexLabel.textContent = `#${String(index).padStart(3, '0')}`;
+    tile.appendChild(indexLabel);
+
+    if (isDuplicate) {
+      const badge = document.createElement('span');
+      badge.className = 'frame-tile-badge';
+      badge.textContent = 'DUP';
+      tile.appendChild(badge);
+      tile.title = `Frame ${index}: duplicate of previous frame`;
+    } else if (isJump) {
+      tile.title = `Frame ${index}: cut / spike candidate`;
+    } else {
+      tile.title = `Frame ${index}`;
+    }
+
+    tile.addEventListener('click', () => selectFrame(index));
+    grid.appendChild(tile);
+  });
+
+  container.appendChild(grid);
+}
+
+function updateFrameGridSelection() {
+  const container = document.getElementById('frame-grid-container');
+  if (!container || container.classList.contains('hidden')) return;
+
+  container.querySelectorAll('.frame-tile.active').forEach(tile => tile.classList.remove('active'));
+  const activeTile = container.querySelector(`.frame-tile[data-index="${state.currentIndex}"]`);
+  if (activeTile) activeTile.classList.add('active');
+}
+
+function renderTimelineVisualisation() {
+  if (state.timelineVizMode === 'contact-sheet') {
+    updateFrameGridSelection();
+    return;
+  }
+
+  if (state.timelineVizMode === 'stack') {
+    drawTemporalStack();
+    return;
+  }
+
+  drawTimeline();
+}
+
+function toggleTimelineMaximized() {
+  setTimelineMaximized(!state.timelineMaximized);
+}
+
+function setTimelineMaximized(maximized) {
+  state.timelineMaximized = maximized;
+
+  const mainStage = document.querySelector('.main-stage');
+  const button = document.getElementById('btn-toggle-timeline-max');
+
+  if (mainStage) mainStage.classList.toggle('timeline-maximized', maximized);
+  if (button) {
+    button.textContent = maximized ? '↙ Restore' : '⛶ Maximise';
+    button.title = maximized ? 'Restore main viewer' : 'Maximise visualisation panel';
+  }
+
+  requestAnimationFrame(() => {
+    resizeTimelineCanvas();
+    resizeTemporalStackCanvas();
+    renderTimelineVisualisation();
+  });
+}
+
+function handleKeyboardShortcuts(e) {
+  if (state.frames.length === 0) return;
+
+  const target = e.target;
+  const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+  if (['input', 'select', 'textarea'].includes(tagName) || (target && target.isContentEditable)) return;
+
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    selectFrame(state.currentIndex + (e.key === 'ArrowRight' ? step : -step));
+  }
 }
 
 // -------------------------------------------------------------
@@ -494,92 +679,95 @@ function loadImageFromFile(file) {
 }
 
 // Decode Video frame-by-frame
-function handleVideoFile(file) {
+async function handleVideoFile(file) {
   state.loadedFileName = file.name;
   state.loadedFileType = 'video';
   state.originalVideoFile = file;
   
-  showLoader("Decoding Video File...", "Initializing decoder");
-  
-  const video = document.createElement('video');
-  video.src = URL.createObjectURL(file);
-  video.muted = true;
-  video.playsInline = true;
-  
-  video.onloadedmetadata = () => {
-    // Small timeout to allow the browser to paint the loader overlay before the blocking prompt pops up
-    setTimeout(async () => {
-      // Query FPS
-      let fps = 24;
-      const userFps = prompt("What is the framerate (FPS) of this video? AI clips are usually 24 or 30.", "24");
-      if (userFps) fps = parseInt(userFps, 10) || 24;
-      state.playbackFps = fps;
-      document.getElementById('select-playback-fps').value = fps.toString();
-      
-      const duration = video.duration;
-      const totalFrames = Math.ceil(duration * fps);
-      
-      state.originalFrames = [];
-      
-      // Hidden canvas for extraction
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      
-      let frameIndex = 0;
-      
-      const extractNextFrame = async () => {
-        if (frameIndex >= totalFrames) {
-          finishFrameLoading();
-          return;
-        }
-        
-        const targetTime = frameIndex / fps;
-        updateLoaderProgress(frameIndex / totalFrames, `Decoding frame ${frameIndex+1} of ${totalFrames}`, `${targetTime.toFixed(2)}s`);
-        
-        video.currentTime = targetTime;
-      };
-      
-      video.onseeked = async () => {
-        // Draw frame to canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // Convert to blob / image
-        try {
-          const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
-          const imgUrl = URL.createObjectURL(blob);
-          const img = new Image();
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = imgUrl;
-          });
-          
-          state.originalFrames.push({
-            name: `frame_${String(frameIndex + 1).padStart(4, '0')}.jpg`,
-            img: img,
-            blob: blob
-          });
-          
-          frameIndex++;
-          extractNextFrame();
-        } catch (err) {
-          console.error("Frame seek error: ", err);
-          frameIndex++;
-          extractNextFrame();
-        }
-      };
-      
-      // Start Extraction
-      extractNextFrame();
-    }, 80);
-  };
-  
-  video.onerror = () => {
+  try {
+    const fps = parseInt(document.getElementById('select-source-fps').value, 10) || 24;
+    state.playbackFps = fps;
+    document.getElementById('select-playback-fps').value = fps.toString();
+    state.originalFrames = await decodeVideoToFrames(file, fps, "Decoding Video File...");
+    finishFrameLoading();
+  } catch (err) {
+    console.error("Video decode error: ", err);
     hideLoader();
     alert("Error loading video file. Please make sure it's a valid MP4, WebM or MOV video.");
-  };
+  }
+}
+
+function decodeVideoToFrames(file, fps, loaderTitle) {
+  return new Promise((resolve, reject) => {
+    showLoader(loaderTitle, "Initializing decoder");
+    
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+    video.src = objectUrl;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    
+    video.onloadedmetadata = () => {
+      setTimeout(() => {
+        const duration = video.duration;
+        const totalFrames = Math.ceil(duration * fps);
+        const frames = [];
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        
+        let frameIndex = 0;
+        
+        const extractNextFrame = () => {
+          if (frameIndex >= totalFrames) {
+            URL.revokeObjectURL(objectUrl);
+            resolve(frames);
+            return;
+          }
+          
+          const targetTime = Math.min(frameIndex / fps, Math.max(0, duration - 0.001));
+          updateLoaderProgress(frameIndex / totalFrames, `Decoding frame ${frameIndex + 1} of ${totalFrames}`, `${targetTime.toFixed(2)}s`);
+          video.currentTime = targetTime;
+        };
+        
+        video.onseeked = async () => {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          
+          try {
+            const blob = await new Promise(resolveBlob => canvas.toBlob(resolveBlob, 'image/jpeg', 0.95));
+            const imgUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            await new Promise((resolveImg, rejectImg) => {
+              img.onload = resolveImg;
+              img.onerror = rejectImg;
+              img.src = imgUrl;
+            });
+            
+            frames.push({
+              name: `frame_${String(frameIndex + 1).padStart(4, '0')}.jpg`,
+              img: img,
+              blob: blob
+            });
+          } catch (err) {
+            console.error("Frame seek error: ", err);
+          }
+          
+          frameIndex++;
+          extractNextFrame();
+        };
+        
+        extractNextFrame();
+      }, 80);
+    };
+    
+    video.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to decode video"));
+    };
+  });
 }
 
 // Generate an in-memory synthetic animation sequence (DEMO)
@@ -607,36 +795,38 @@ async function loadDemoSequence() {
   for (let i = 0; i < totalFrames; i++) {
     updateLoaderProgress(i / totalFrames, `Rendering Frame ${i+1} of ${totalFrames}`, `frame_${String(i+1).padStart(4, '0')}`);
     
-    // DECISION LOGIC FOR DROPS & DUPLICATES
-    let frameToDraw = i;
+    // 1. INJECT DUPLICATES by reusing the previous rendered frame exactly.
+    // Drawing changing labels or overlays would make this a bad duplicate-frame test.
+    const isInjectedDuplicate = (i >= 15 && i < 17) || (i >= 42 && i < 44);
+    if (isInjectedDuplicate && state.originalFrames.length > 0) {
+      const previous = state.originalFrames[state.originalFrames.length - 1];
+      state.originalFrames.push({
+        name: `demo_frame_${String(i + 1).padStart(4, '0')}.png`,
+        img: previous.img,
+        blob: previous.blob
+      });
+      continue;
+    }
     
-    // 1. INJECT DUPLICATES
-    if (i >= 15 && i < 17) {
-      // Repeat Frame 14! (2 frames of duplicate freeze)
-      // We don't advance the physics
-    } else if (i >= 42 && i < 44) {
-      // Repeat Frame 41! (2 frames of duplicate freeze)
-    } else {
-      // Normal physics update
+    // Normal physics update
+    ballX += ballSpeedX;
+    ballY += ballSpeedY;
+    
+    // Wall collisions
+    if (ballX + ballRadius > canvas.width || ballX - ballRadius < 0) {
+      ballSpeedX = -ballSpeedX;
       ballX += ballSpeedX;
+    }
+    if (ballY + ballRadius > canvas.height || ballY - ballRadius < 0) {
+      ballSpeedY = -ballSpeedY;
       ballY += ballSpeedY;
-      
-      // Wall collisions
-      if (ballX + ballRadius > canvas.width || ballX - ballRadius < 0) {
-        ballSpeedX = -ballSpeedX;
-        ballX += ballSpeedX;
-      }
-      if (ballY + ballRadius > canvas.height || ballY - ballRadius < 0) {
-        ballSpeedY = -ballSpeedY;
-        ballY += ballSpeedY;
-      }
-      
-      // 2. INJECT MOTION JUMP (DROPPED FRAME EFFECT)
-      if (i === 28) {
-        // Skip ahead by 3 frames worth of motion! Creates a huge jump!
-        ballX += ballSpeedX * 3.5;
-        ballY += ballSpeedY * 3.5;
-      }
+    }
+    
+    // 2. INJECT TEMPORAL SPIKE (DROPPED FRAME EFFECT)
+    if (i === 28) {
+      // Skip ahead by 3 frames worth of motion. This creates a large transition spike.
+      ballX += ballSpeedX * 3.5;
+      ballY += ballSpeedY * 3.5;
     }
     
     // Draw Frame Content
@@ -720,7 +910,7 @@ async function loadDemoSequence() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#ef4444';
       ctx.font = 'bold 18px Outfit, sans-serif';
-      ctx.fillText("⚠️ MOTION JUMP INJECTED (DROP)", 180, 240);
+      ctx.fillText("⚠️ TEMPORAL SPIKE INJECTED (DROP)", 180, 240);
     }
     
     // Convert to Image
@@ -780,6 +970,7 @@ function finishFrameLoading() {
   // Hide Welcome page
   document.getElementById('welcome-overlay').classList.add('hidden');
   document.getElementById('btn-reset-app').style.display = 'block';
+  setTimelineVizMode('curve');
   
   // Enable workspace actions
   setWorkspaceActive(true);
@@ -798,34 +989,33 @@ async function analyzeSequence() {
   if (state.frames.length < 2) return;
   
   showLoader("Analyzing Motion Curve...", "Computing frame deltas");
-  
-  state.diffs = [0]; // Frame 0 has 0 diff
-  const total = state.frames.length;
-  
-  for (let i = 1; i < total; i++) {
-    if (i % 10 === 0) {
-      updateLoaderProgress(i / total, "Analyzing frame differences...", `Frame ${i} of ${total}`);
-      // Yield to UI Thread to prevent tab freeze
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-    
-    const diff = compareFrames(state.frames[i-1].img, state.frames[i].img);
-    state.diffs.push(diff);
-  }
+  state.diffs = await calculateDiffsForFrames(state.frames, "Analyzing frame differences...");
   
   // Trigger anomaly detection logic
   detectAnomalies();
+  updateComparisonReport();
   
   hideLoader();
   selectFrame(0);
   
   // Enable Re-analyze button
   document.getElementById('btn-reanalyze').disabled = false;
-  document.getElementById('btn-autofix-dups').disabled = false;
+}
+
+async function calculateDiffsForFrames(frames, progressTitle) {
+  const diffs = [0];
+  const total = frames.length;
   
-  // Only show auto-smooth jumps button for video sequences, as it changes timing
-  document.getElementById('btn-autofix-jumps').style.display = 'block';
-  document.getElementById('btn-autofix-jumps').disabled = false;
+  for (let i = 1; i < total; i++) {
+    if (i % 10 === 0) {
+      updateLoaderProgress(i / total, progressTitle, `Frame ${i} of ${total}`);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    diffs.push(compareFrames(frames[i - 1].img, frames[i].img));
+  }
+  
+  return diffs;
 }
 
 // Core Image Difference function: downscales and compares Mean Absolute Error (MAE)
@@ -842,23 +1032,212 @@ function compareFrames(img1, img2) {
   const data2 = analysisCtx.getImageData(0, 0, w, h).data;
   
   let absoluteSum = 0;
+  let changedPixels = 0;
   const numPixels = w * h;
   
-  // Sum absolute differences in R, G, B channels (ignoring Alpha)
+  // Sum absolute differences in R, G, B channels (ignoring Alpha).
+  // Changed-pixel coverage catches small subjects moving across a large frame,
+  // where whole-frame MAE alone can make real motion look like a duplicate.
   for (let i = 0; i < data1.length; i += 4) {
-    absoluteSum += Math.abs(data1[i] - data2[i]);       // Red
-    absoluteSum += Math.abs(data1[i+1] - data2[i+1]);   // Green
-    absoluteSum += Math.abs(data1[i+2] - data2[i+2]);   // Blue
+    const redDiff = Math.abs(data1[i] - data2[i]);
+    const greenDiff = Math.abs(data1[i+1] - data2[i+1]);
+    const blueDiff = Math.abs(data1[i+2] - data2[i+2]);
+    const pixelDiff = (redDiff + greenDiff + blueDiff) / 3;
+    
+    absoluteSum += redDiff + greenDiff + blueDiff;
+    if (pixelDiff > 8) changedPixels++;
   }
   
   // Convert to average difference percentage (Max absolute diff is 255 * 3 per pixel)
   const mae = absoluteSum / (numPixels * 3);
-  const percentageDiff = (mae / 255) * 100;
+  const maePercentage = (mae / 255) * 100;
+  const changedPixelPercentage = (changedPixels / numPixels) * 100;
   
-  return percentageDiff;
+  return Math.max(maePercentage, changedPixelPercentage * 0.6);
 }
 
-// Detect Duplicates and Motion Spikes (Jumps)
+async function handleComparisonVideoFile(file) {
+  if (state.frames.length < 2 || state.diffs.length < 2) {
+    alert("Load and analyze a source sequence before comparing another video.");
+    return;
+  }
+  
+  try {
+    const fps = state.playbackFps || 24;
+    const frames = await decodeVideoToFrames(file, fps, "Decoding Comparison Video...");
+    
+    if (frames.length < 2) {
+      throw new Error("Comparison video did not decode enough frames.");
+    }
+    
+    showLoader("Analyzing Comparison Curve...", "Computing comparison video deltas");
+    const diffs = await calculateDiffsForFrames(frames, "Analyzing comparison differences...");
+    
+    state.comparison = {
+      fileName: file.name,
+      frames,
+      diffs,
+      report: null
+    };
+    
+    updateComparisonReport();
+    hideLoader();
+    renderTimelineVisualisation();
+    
+    const clearBtn = document.getElementById('btn-clear-compare');
+    if (clearBtn) {
+      clearBtn.style.display = 'block';
+      clearBtn.disabled = false;
+    }
+  } catch (err) {
+    console.error("Comparison decode error: ", err);
+    hideLoader();
+    alert("Could not compare this video. Please make sure it is a valid MP4/WebM/MOV and roughly matches the loaded source.");
+  }
+}
+
+function clearComparison(redraw = true) {
+  state.comparison = {
+    fileName: '',
+    frames: [],
+    diffs: [],
+    report: null
+  };
+  
+  const clearBtn = document.getElementById('btn-clear-compare');
+  if (clearBtn) {
+    clearBtn.style.display = 'none';
+    clearBtn.disabled = true;
+  }
+  
+  const report = document.getElementById('compare-report');
+  if (report) {
+    report.className = 'compare-report empty';
+    report.textContent = 'Load another MP4 to overlay its motion curve against this sequence.';
+  }
+  
+  if (redraw) renderTimelineVisualisation();
+}
+
+function updateComparisonReport() {
+  const reportEl = document.getElementById('compare-report');
+  if (!reportEl || !state.comparison || state.comparison.diffs.length < 2 || state.diffs.length < 2) return;
+  
+  const baseDiffs = state.diffs;
+  const compareDiffs = state.comparison.diffs;
+  const comparableFrames = Math.min(baseDiffs.length, compareDiffs.length);
+  const threshold = state.dupThreshold;
+  
+  let baseLow = 0;
+  let compareLow = 0;
+  let fixedLow = 0;
+  let stillLow = 0;
+  let newLow = 0;
+  let improvedMagnitude = 0;
+  let worsenedMagnitude = 0;
+  
+  for (let i = 1; i < comparableFrames; i++) {
+    const sourceIsLow = baseDiffs[i] < threshold;
+    const compareIsLow = compareDiffs[i] < threshold;
+    
+    if (sourceIsLow) baseLow++;
+    if (compareIsLow) compareLow++;
+    if (sourceIsLow && !compareIsLow) fixedLow++;
+    if (sourceIsLow && compareIsLow) stillLow++;
+    if (!sourceIsLow && compareIsLow) newLow++;
+    
+    const delta = compareDiffs[i] - baseDiffs[i];
+    if (delta > 0.25) improvedMagnitude++;
+    if (delta < -0.25) worsenedMagnitude++;
+  }
+  
+  const motionCorrelation = getCorrelation(baseDiffs.slice(1, comparableFrames), compareDiffs.slice(1, comparableFrames));
+  const frameDelta = compareDiffs.length - baseDiffs.length;
+  const verdictClass = fixedLow > newLow && compareLow < baseLow ? 'good' : (compareLow > baseLow || newLow > fixedLow ? 'bad' : 'warn');
+  const verdict = verdictClass === 'good'
+    ? 'Lower low-motion cadence detected'
+    : verdictClass === 'bad'
+      ? 'More low-motion cadence detected'
+      : 'Similar motion cadence';
+  
+  state.comparison.report = {
+    comparableFrames,
+    baseLow,
+    compareLow,
+    fixedLow,
+    stillLow,
+    newLow,
+    improvedMagnitude,
+    worsenedMagnitude,
+    motionCorrelation,
+    frameDelta
+  };
+  
+  reportEl.className = 'compare-report';
+  reportEl.innerHTML = `
+    <div class="compare-summary ${verdictClass}">${verdict}</div>
+    <div style="margin-top: 4px; word-break: break-all;">${escapeHtml(state.comparison.fileName)}</div>
+    <div class="compare-grid">
+      <div class="compare-metric">
+        <div class="compare-metric-value">${baseLow} -> ${compareLow}</div>
+        <div class="compare-metric-label">Low-motion pairs</div>
+      </div>
+      <div class="compare-metric">
+        <div class="compare-metric-value">${fixedLow}</div>
+        <div class="compare-metric-label">Reduced low-motion pairs</div>
+      </div>
+      <div class="compare-metric">
+        <div class="compare-metric-value">${newLow}</div>
+        <div class="compare-metric-label">New low-motion pairs</div>
+      </div>
+      <div class="compare-metric">
+        <div class="compare-metric-value">${motionCorrelation.toFixed(3)}</div>
+        <div class="compare-metric-label">Curve match</div>
+      </div>
+    </div>
+    ${frameDelta === 0 ? '' : `<div style="margin-top: 8px; color: var(--warning);">Frame count differs by ${frameDelta}.</div>`}
+  `;
+}
+
+function getCorrelation(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return 1;
+  
+  let sumA = 0;
+  let sumB = 0;
+  for (let i = 0; i < n; i++) {
+    sumA += a[i];
+    sumB += b[i];
+  }
+  
+  const meanA = sumA / n;
+  const meanB = sumB / n;
+  let numerator = 0;
+  let denomA = 0;
+  let denomB = 0;
+  
+  for (let i = 0; i < n; i++) {
+    const da = a[i] - meanA;
+    const db = b[i] - meanB;
+    numerator += da * db;
+    denomA += da * da;
+    denomB += db * db;
+  }
+  
+  const denominator = Math.sqrt(denomA * denomB);
+  return denominator === 0 ? 1 : numerator / denominator;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Detect duplicates and abrupt temporal spikes.
 function detectAnomalies() {
   state.anomalies = [];
   
@@ -867,13 +1246,13 @@ function detectAnomalies() {
   const total = state.frames.length;
   
   let dupCount = 0;
-  let jumpCount = 0;
+  let spikeCount = 0;
   
   // 1. Identify Duplicates
   for (let i = 1; i < total; i++) {
     const diff = state.diffs[i];
     
-    if (diff <= dupThresh) {
+    if (diff < dupThresh) {
       // Exclude repaired frames from being flagged as stutters
       if (state.frames[i].repaired || (state.frames[i-1] && state.frames[i-1].repaired)) {
         continue;
@@ -889,12 +1268,12 @@ function detectAnomalies() {
     }
   }
   
-  // 2. Identify Motion Jumps using a Local Median rolling filter
-  // We compare each diff to the median diff in a local window surrounding the frame
+  // 2. Identify abrupt temporal spikes using a local median rolling filter.
+  // These are review candidates: they can be missing frames, intentional cuts, or angle changes.
   const windowRadius = 3;
   for (let i = 1; i < total; i++) {
     // Skip if it's already classified as a duplicate to avoid double flagging
-    if (state.diffs[i] <= dupThresh) continue;
+    if (state.diffs[i] < dupThresh) continue;
     
     // Gather surrounding diff values
     const surroundingDiffs = [];
@@ -928,16 +1307,16 @@ function detectAnomalies() {
         const isLinearTransition = nextDiff && Math.abs(currentDiff - nextDiff) < 0.15 * (currentDiff + nextDiff);
         
         if (isRepaired || isLinearTransition) {
-          continue; // Gracefully suppress false positive motion jump alerts on smooth linear intervals!
+          continue; // Suppress false positives on smooth linear intervals.
         }
         
         state.anomalies.push({
           index: i,
           type: 'jump',
           severity: currentDiff / (median || 0.1),
-          description: `Sudden motion leap! Delta is ${currentDiff.toFixed(2)}% (${(currentDiff / (median || 1)).toFixed(1)}x local median).`
+          description: `Abrupt transition candidate. Delta is ${currentDiff.toFixed(2)}% (${(currentDiff / (median || 1)).toFixed(1)}x local median). Review before smoothing; this may be an intentional cut or angle change.`
         });
-        jumpCount++;
+        spikeCount++;
       }
     }
   }
@@ -947,7 +1326,7 @@ function detectAnomalies() {
   
   // Update UI Stats Cards
   document.getElementById('stat-duplicates-count').textContent = dupCount;
-  document.getElementById('stat-jumps-count').textContent = jumpCount;
+  document.getElementById('stat-jumps-count').textContent = spikeCount;
   
   const dupCard = document.getElementById('stat-card-duplicates');
   const jumpCard = document.getElementById('stat-card-jumps');
@@ -955,27 +1334,49 @@ function detectAnomalies() {
   if (dupCount > 0) dupCard.classList.add('has-issues');
   else dupCard.classList.remove('has-issues');
   
-  if (jumpCount > 0) jumpCard.classList.add('has-issues');
+  if (spikeCount > 0) jumpCard.classList.add('has-issues');
   else jumpCard.classList.remove('has-issues');
   
   // Build Sidebar List Panel
   renderAnomalyList();
+  if (state.timelineVizMode === 'contact-sheet') renderFrameGrid();
   
   // Redraw timeline track
-  drawTimeline();
+  renderTimelineVisualisation();
 }
 
-// Render the scrollable list of anomalies in sidebar
+// Render the expandable list of anomalies in sidebar
+function toggleAnomalyList() {
+  if (state.anomalies.length === 0) return;
+  state.anomalyListExpanded = !state.anomalyListExpanded;
+  updateAnomalyListToggle();
+}
+
+function updateAnomalyListToggle() {
+  const sidebar = document.querySelector('.sidebar');
+  const button = document.getElementById('btn-toggle-anomaly-list');
+  if (!sidebar || !button) return;
+  
+  const count = state.anomalies.length;
+  sidebar.classList.toggle('anomaly-list-expanded', state.anomalyListExpanded && count > 0);
+  button.disabled = count === 0;
+  button.textContent = state.anomalyListExpanded && count > 0
+    ? `Hide Details (${count})`
+    : `Show Details (${count})`;
+}
+
 function renderAnomalyList() {
   const container = document.getElementById('anomaly-list-container');
   container.innerHTML = '';
   
   if (state.anomalies.length === 0) {
+    state.anomalyListExpanded = false;
     container.innerHTML = `
       <div class="empty-reports">
         🎉 No anomalies detected! Motion is smooth.
       </div>
     `;
+    updateAnomalyListToggle();
     return;
   }
   
@@ -985,7 +1386,7 @@ function renderAnomalyList() {
     item.dataset.index = anomaly.index;
     
     const dotClass = anomaly.type === 'duplicate' ? 'duplicate' : 'jump';
-    const typeLabel = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Motion Jump';
+    const typeLabel = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Cut / Spike Candidate';
     const padIndex = String(anomaly.index).padStart(4, '0');
     
     item.innerHTML = `
@@ -1005,6 +1406,8 @@ function renderAnomalyList() {
     
     container.appendChild(item);
   });
+  
+  updateAnomalyListToggle();
 }
 
 // -------------------------------------------------------------
@@ -1058,7 +1461,7 @@ function selectFrame(index) {
   // Sync Inspectors & Viewport
   renderViewport();
   renderInspector();
-  drawTimeline();
+  renderTimelineVisualisation();
 }
 
 // Render the main display canvas
@@ -1155,6 +1558,38 @@ function renderInspector() {
   const currImg = state.frames[currentIdx].img;
   currentCtx.clearRect(0, 0, currentCanvas.width, currentCanvas.height);
   currentCtx.drawImage(currImg, 0, 0, currentCanvas.width, currentCanvas.height);
+
+  const selectedAnomaly = state.anomalies.find(a => a.index === currentIdx);
+  const inspectorHeader = document.getElementById('inspector-anomaly-header');
+  const inspectorDot = document.getElementById('inspector-anomaly-type-dot');
+  const inspectorType = document.getElementById('inspector-anomaly-type');
+  const inspectorDesc = document.getElementById('inspector-anomaly-desc');
+  const selectedPrevMotion = currentIdx > 0 ? state.diffs[currentIdx] : 0;
+  const selectedNextMotion = currentIdx + 1 < state.diffs.length ? state.diffs[currentIdx + 1] : 0;
+  const selectedMetricSummary = `Motion from previous: ${selectedPrevMotion.toFixed(3)}%. Motion to next: ${selectedNextMotion.toFixed(3)}%.`;
+
+  if (selectedAnomaly) {
+    inspectorHeader.style.display = 'flex';
+
+    if (selectedAnomaly.type === 'duplicate') {
+      inspectorHeader.className = "anomaly-type-title duplicate";
+      inspectorDot.className = "report-dot duplicate";
+      inspectorType.textContent = "LOW-MOTION / DUPLICATE CANDIDATE";
+      inspectorDesc.textContent = `${selectedMetricSummary} This frame is visually very close to the previous frame and may indicate baked-in cadence stutter.`;
+    } else {
+      inspectorHeader.className = "anomaly-type-title jump";
+      inspectorDot.className = "report-dot jump";
+      inspectorType.textContent = "CUT / SPIKE CANDIDATE";
+      inspectorDesc.textContent = `${selectedMetricSummary} This abrupt transition may be a real edit, angle change, or dropped-frame spike. Inspect the surrounding frames before treating it as an error.`;
+    }
+  } else {
+    inspectorHeader.className = "anomaly-type-title";
+    inspectorHeader.style.display = 'none';
+    inspectorType.textContent = "Frame Metrics";
+    inspectorDesc.textContent = `Frame #${String(currentIdx).padStart(4, '0')}. ${selectedMetricSummary}`;
+  }
+
+  return;
   
   // Update Anomaly Fix Details
   const isAnomaly = state.anomalies.find(a => a.index === currentIdx);
@@ -1182,8 +1617,8 @@ function renderInspector() {
     } else {
       infoHeader.className = "anomaly-type-title jump";
       infoDot.className = "report-dot jump";
-      infoType.textContent = "MOTION JUMP DETECTED";
-      infoDesc.textContent = `A sudden positional leap in motion indicates a potential dropped frame. Smooth this jump by inserting a blended frame to act as the missing frame.`;
+      infoType.textContent = "CUT / SPIKE CANDIDATE";
+      infoDesc.textContent = `This is an abrupt transition, not automatically an error. It may be an intentional smash cut or angle change. Only smooth it if the surrounding frames show the same shot and the motion appears to have skipped.`;
       
       btnInterpolate.disabled = false;
     }
@@ -1216,6 +1651,8 @@ function renderInspector() {
     // Calculate flanking frame velocity (MAE difference)
     const velocity = compareFrames(state.frames[currentIdx-1].img, state.frames[currentIdx+1].img);
     aiCard.style.display = 'flex';
+    renderRepairWorkflow(aiContent, isAnomaly, velocity);
+    return;
     
     let modelRec = "";
     let resolveRec = "";
@@ -1245,6 +1682,42 @@ function renderInspector() {
   } else {
     aiCard.style.display = 'none';
   }
+}
+
+function renderRepairWorkflow(container, anomaly, velocity) {
+  const velocityLabel = velocity > 2.0
+    ? `<span style="color: #ff3366; font-weight: bold;">High Motion (${velocity.toFixed(2)}%)</span>`
+    : `<span style="color: #00b4d8; font-weight: bold;">Moderate Motion (${velocity.toFixed(2)}%)</span>`;
+  
+  if (anomaly.type === 'duplicate') {
+    container.innerHTML = `
+      <div style="margin-bottom: 8px;">Replacement confidence: ${velocityLabel}</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #9d4edd;">
+          <strong>After Effects Pixel Motion plate:</strong> set the source clip to <strong>50% speed</strong>, enable <strong>Frame Blending</strong>, set frame blending to <strong>Pixel Motion</strong>, export the slowed repair plate, re-import it, set it to <strong>200% speed</strong>, then replace only the flagged bad frames.
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #00b4d8;">
+          <strong>Why this works:</strong> AE generates plausible in-between frames from the surrounding motion, but you keep editorial control by swapping only the duplicate frames this tool flags.
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #ffb703;">
+          <strong>Workflow tip:</strong> export Resolve/Premiere markers from this tool, use them as a frame checklist, then import final repaired stills with <strong>Import AI Repaired Frames</strong>.
+        </div>
+      </div>
+    `;
+    return;
+  }
+  
+  container.innerHTML = `
+    <div style="margin-bottom: 8px;">Transition speed: ${velocityLabel}</div>
+    <div style="display: flex; flex-direction: column; gap: 6px;">
+      <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #ffb703;">
+        <strong>Review first:</strong> this may be an intentional smash cut or camera-angle change. Do not interpolate across a real cut.
+      </div>
+      <div style="background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #9d4edd;">
+        <strong>If it is a dropped-frame skip:</strong> use the same AE Pixel Motion repair-plate method, but replace only this frame range after visually confirming the shot is continuous.
+      </div>
+    </div>
+  `;
 }
 
 // -------------------------------------------------------------
@@ -1280,7 +1753,8 @@ function drawTimeline() {
   }
   
   // Find max difference to scale the curve nicely
-  const maxDiff = Math.max(...state.diffs, 1.5);
+  const compareDiffs = state.comparison && state.comparison.diffs ? state.comparison.diffs : [];
+  const maxDiff = Math.max(...state.diffs, ...compareDiffs, 1.5);
   
   // 2. Draw Motion Difference Waveform bars
   const barWidth = Math.max(1, trackWidth / total);
@@ -1297,7 +1771,7 @@ function drawTimeline() {
     let barColor = 'rgba(16, 185, 129, 0.4)'; // Emerald Green (normal motion)
     
     // Check if duplicate
-    if (diff <= state.dupThreshold) {
+    if (diff < state.dupThreshold) {
       const isRepaired = state.frames[i].repaired || (state.frames[i-1] && state.frames[i-1].repaired);
       if (isRepaired) {
         barColor = 'rgba(139, 92, 246, 0.85)'; // Neon Purple (repaired)
@@ -1309,10 +1783,10 @@ function drawTimeline() {
       if (isRepaired) {
         barColor = 'rgba(139, 92, 246, 0.85)'; // Neon Purple (repaired)
       } else {
-        // Check if jump
+        // Check if cut/spike review candidate
         const isJump = state.anomalies.find(a => a.index === i && a.type === 'jump');
         if (isJump) {
-          barColor = 'rgba(239, 68, 68, 0.8)'; // Red (motion jump)
+          barColor = 'rgba(245, 158, 11, 0.85)'; // Amber (cut/spike candidate)
         } else if (diff < state.dupThreshold * 2) {
           barColor = 'rgba(245, 158, 11, 0.5)'; // Yellow (low motion/near freeze)
         }
@@ -1321,6 +1795,31 @@ function drawTimeline() {
     
     timelineCtx.fillStyle = barColor;
     timelineCtx.fillRect(x - barWidth / 2, y, barWidth, barHeight);
+  }
+  
+  // 2b. Overlay comparison motion curve if a repaired video has been loaded.
+  if (compareDiffs.length > 1) {
+    const compareTotal = compareDiffs.length;
+    const compareLimit = Math.min(compareTotal, total);
+    
+    timelineCtx.save();
+    timelineCtx.strokeStyle = 'rgba(34, 211, 238, 0.95)';
+    timelineCtx.lineWidth = 2;
+    timelineCtx.shadowColor = 'rgba(34, 211, 238, 0.45)';
+    timelineCtx.shadowBlur = 6;
+    timelineCtx.beginPath();
+    
+    for (let i = 1; i < compareLimit; i++) {
+      const x = padding + (trackWidth * i) / Math.max(total - 1, 1);
+      const diff = compareDiffs[i];
+      const y = h - 12 - (diff / maxDiff) * (h - 24);
+      
+      if (i === 1) timelineCtx.moveTo(x, y);
+      else timelineCtx.lineTo(x, y);
+    }
+    
+    timelineCtx.stroke();
+    timelineCtx.restore();
   }
   
   // 3. Draw threshold lines
@@ -1359,6 +1858,121 @@ function drawTimeline() {
   timelineCtx.fillText(`#${state.currentIndex}`, playheadX - 10, h - 2);
   
   timelineCtx.shadowBlur = 0; // Reset shadow
+}
+
+function drawTemporalStack() {
+  if (!temporalStackCanvas || state.frames.length === 0) return;
+
+  const w = temporalStackCanvas.width / window.devicePixelRatio;
+  const h = temporalStackCanvas.height / window.devicePixelRatio;
+  temporalStackCtx.clearRect(0, 0, w, h);
+  temporalStackCtx.fillStyle = '#000';
+  temporalStackCtx.fillRect(0, 0, w, h);
+
+  const duplicateIndexes = new Set(state.anomalies.filter(a => a.type === 'duplicate').map(a => a.index));
+  const jumpIndexes = new Set(state.anomalies.filter(a => a.type === 'jump').map(a => a.index));
+  const img = state.frames[state.currentIndex].img;
+  const aspect = img.width / Math.max(img.height, 1);
+  const stackScale = state.stackScale || 1;
+  const baseCardH = Math.max(54, Math.min(h * 0.78, 150 * stackScale, h * 0.34 * stackScale));
+  const baseCardW = Math.max(52, Math.min(w * 0.36, baseCardH * aspect));
+  const stepX = Math.max(12, Math.min(42, w / 58)) * Math.min(stackScale, 2.6);
+  const stepY = -Math.max(5, Math.min(20, h / 46)) * Math.min(stackScale, 2.6);
+  const before = Math.min(Math.max(10, Math.round(16 / stackScale)), state.currentIndex);
+  const after = Math.min(Math.max(16, Math.round(32 / stackScale)), state.frames.length - state.currentIndex - 1);
+  const start = state.currentIndex - before;
+  const end = state.currentIndex + after;
+  const centerX = w * 0.42;
+  const centerY = h * 0.56;
+
+  temporalStackHitboxes = [];
+
+  temporalStackCtx.save();
+  temporalStackCtx.strokeStyle = 'rgba(139, 92, 246, 0.08)';
+  temporalStackCtx.lineWidth = 1;
+  for (let x = 0; x < w; x += 32) {
+    temporalStackCtx.beginPath();
+    temporalStackCtx.moveTo(x, 0);
+    temporalStackCtx.lineTo(x, h);
+    temporalStackCtx.stroke();
+  }
+  temporalStackCtx.restore();
+
+  const drawOrder = [];
+  for (let i = start; i <= end; i++) drawOrder.push(i);
+  drawOrder.sort((a, b) => Math.abs(b - state.currentIndex) - Math.abs(a - state.currentIndex));
+
+  drawOrder.forEach(index => {
+    const relative = index - state.currentIndex;
+    const distance = Math.abs(relative);
+    const scale = Math.max(0.58, 1 - distance * 0.014);
+    const cardW = baseCardW * scale;
+    const cardH = baseCardH * scale;
+    const x = centerX + relative * stepX - cardW / 2;
+    const y = centerY + relative * stepY - cardH / 2;
+    const isDuplicate = duplicateIndexes.has(index);
+    const isJump = jumpIndexes.has(index);
+    const isCurrent = index === state.currentIndex;
+
+    if (x > w + 20 || x + cardW < -20 || y > h + 20 || y + cardH < -20) return;
+
+    temporalStackCtx.save();
+    temporalStackCtx.globalAlpha = Math.max(0.36, 1 - distance * 0.018);
+    temporalStackCtx.fillStyle = 'rgba(5, 6, 12, 0.95)';
+    temporalStackCtx.fillRect(x - 3, y - 3, cardW + 6, cardH + 6);
+
+    temporalStackCtx.drawImage(state.frames[index].img, x, y, cardW, cardH);
+
+    let strokeColor = 'rgba(255, 255, 255, 0.18)';
+    let lineWidth = 1;
+    if (isJump) {
+      strokeColor = 'rgba(245, 158, 11, 0.95)';
+      lineWidth = 2;
+    }
+    if (isDuplicate) {
+      strokeColor = '#8b5cf6';
+      lineWidth = 4;
+    }
+    if (isCurrent) {
+      strokeColor = isDuplicate ? '#a78bfa' : '#22d3ee';
+      lineWidth = isDuplicate ? 5 : 3;
+      temporalStackCtx.shadowColor = isDuplicate ? 'rgba(139, 92, 246, 0.75)' : 'rgba(34, 211, 238, 0.65)';
+      temporalStackCtx.shadowBlur = 14;
+    }
+
+    temporalStackCtx.strokeStyle = strokeColor;
+    temporalStackCtx.lineWidth = lineWidth;
+    temporalStackCtx.strokeRect(x - lineWidth / 2, y - lineWidth / 2, cardW + lineWidth, cardH + lineWidth);
+    temporalStackCtx.shadowBlur = 0;
+
+    temporalStackCtx.font = '10px ui-monospace, SFMono-Regular, Consolas, monospace';
+    temporalStackCtx.fillStyle = isDuplicate ? 'rgba(88, 28, 135, 0.92)' : 'rgba(0, 0, 0, 0.68)';
+    const label = isDuplicate ? `DUP #${String(index).padStart(3, '0')}` : `#${String(index).padStart(3, '0')}`;
+    const labelW = temporalStackCtx.measureText(label).width + 12;
+    temporalStackCtx.fillRect(x + 6, y + 6, labelW, 17);
+    temporalStackCtx.fillStyle = '#f8fafc';
+    temporalStackCtx.fillText(label, x + 12, y + 18);
+
+    if (isJump) {
+      temporalStackCtx.fillStyle = 'rgba(245, 158, 11, 0.92)';
+      temporalStackCtx.fillRect(x + 6, y + 27, 42, 17);
+      temporalStackCtx.fillStyle = '#111827';
+      temporalStackCtx.fillText('SPIKE', x + 12, y + 39);
+    }
+
+    temporalStackCtx.restore();
+    temporalStackHitboxes.push({ index, x, y, w: cardW, h: cardH });
+  });
+
+  temporalStackCtx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  temporalStackCtx.fillRect(12, h - 34, Math.min(390, w - 24), 22);
+  temporalStackCtx.fillStyle = '#cfd4ff';
+  temporalStackCtx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
+  temporalStackCtx.fillText(
+    `Frame ${String(state.currentIndex).padStart(4, '0')} / ${state.frames.length - 1}  |  Use Play + FPS for motion`,
+    22,
+    h - 19
+  );
 }
 
 // -------------------------------------------------------------
@@ -1451,7 +2065,7 @@ function deleteSingleFrame(index) {
   analyzeSequence();
 }
 
-// Interpolate a single duplicate or jump frame by blending adjacent ones
+// Interpolate a single duplicate or spike candidate by blending adjacent ones
 async function interpolateSingleFrame(index) {
   if (index === 0 || index === state.frames.length - 1) {
     alert("Cannot interpolate boundary frames (first or last frame).");
@@ -1831,13 +2445,13 @@ async function autoFixAllDuplicates() {
     
     // Look backward for the closest unique frame
     let prevIdx = idx - 1;
-    while (prevIdx > 0 && state.diffs[prevIdx] <= state.dupThreshold) {
+    while (prevIdx > 0 && state.diffs[prevIdx] < state.dupThreshold) {
       prevIdx--;
     }
     
     // Look forward for the closest unique frame
     let nextIdx = idx + 1;
-    while (nextIdx < state.frames.length - 1 && state.diffs[nextIdx] <= state.dupThreshold) {
+    while (nextIdx < state.frames.length - 1 && state.diffs[nextIdx] < state.dupThreshold) {
       nextIdx++;
     }
     
@@ -1865,30 +2479,31 @@ async function autoFixAllDuplicates() {
   alert(`Successfully repaired ${duplicates.length} duplicate frames! Check the timeline now.`);
 }
 
-// Auto-smooth motion jumps by injecting missing frames (Video retimer approach)
+// Auto-smooth cut/spike candidates by injecting missing frames (video retimer approach).
+// This is intentionally conservative in the UI because abrupt changes are often real cuts.
 async function autoFixAllJumps() {
   const jumps = state.anomalies.filter(a => a.type === 'jump');
   if (jumps.length === 0) {
-    alert("No motion jumps detected under the current threshold.");
+    alert("No cut / spike candidates detected under the current threshold.");
     return;
   }
   
   pause();
   
-  const confirmFix = confirm(`Smooth motion jumps by inserting blended frames between the sudden leaps? This will inject new frames and make the sequence slightly longer (retaining original motion speed).`);
+  const confirmFix = confirm(`Smooth ${jumps.length} cut / spike candidate(s) by inserting blended frames? Only continue if these are dropped-frame skips, not intentional smash cuts or angle changes. This will inject new frames and make the sequence slightly longer.`);
   if (!confirmFix) return;
   
-  showLoader("Injecting Smoothing Frames...", "Smoothing jumps");
+  showLoader("Injecting Smoothing Frames...", "Smoothing spike candidates");
   
-  // Resolve jumps. Note: as we inject frames, index array offsets shift!
-  // To avoid indexing conflicts, we process jumps in REVERSE order (from end of timeline to start!)
+  // Resolve candidates. Note: as we inject frames, index array offsets shift.
+  // To avoid indexing conflicts, we process in reverse order.
   const sortedJumps = [...jumps].sort((a, b) => b.index - a.index);
   const total = sortedJumps.length;
   
   for (let k = 0; k < total; k++) {
     const idx = sortedJumps[k].index;
     
-    updateLoaderProgress(k / total, `Smoothing jump at frame #${idx}...`, `Resolving leap`);
+    updateLoaderProgress(k / total, `Smoothing candidate at frame #${idx}...`, `Review item ${k + 1} of ${total}`);
     
     // Blend frame-1 and frame to create an in-between frame
     const prevFrame = state.frames[idx - 1].img;
@@ -1911,7 +2526,7 @@ async function autoFixAllJumps() {
   // Re-analyze
   await analyzeSequence();
   selectFrame(0);
-  alert(`Successfully injected ${total} blended frames to smooth out large motion jumps!`);
+  alert(`Successfully injected ${total} blended frame(s) for selected spike candidates.`);
 }
 
 // -------------------------------------------------------------
@@ -2283,10 +2898,10 @@ function exportResolveMarkers() {
   let csvContent = "Title,Description,Timecode,Color,Duration\n";
   
   state.anomalies.forEach(anomaly => {
-    const title = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Motion Jump';
+    const title = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Cut / Spike Candidate';
     const desc = anomaly.description.replace(/"/g, '""');
     const tc = frameToTimecode(anomaly.index, fps);
-    const color = anomaly.type === 'duplicate' ? 'Blue' : 'Red';
+    const color = anomaly.type === 'duplicate' ? 'Blue' : 'Yellow';
     const duration = "00:00:00:01";
     
     csvContent += `"${title}","${desc}",${tc},${color},${duration}\n`;
@@ -2314,8 +2929,8 @@ function exportPremiereEDL() {
     const eventNum = String(i + 1).padStart(3, '0');
     const tc = frameToTimecode(anomaly.index, fps);
     const tcNext = frameToTimecode(anomaly.index + 1, fps);
-    const color = anomaly.type === 'duplicate' ? 'BLUE' : 'RED';
-    const label = anomaly.type === 'duplicate' ? 'DUPLICATE' : 'MOTION JUMP';
+    const color = anomaly.type === 'duplicate' ? 'BLUE' : 'YELLOW';
+    const label = anomaly.type === 'duplicate' ? 'DUPLICATE' : 'CUT / SPIKE';
     
     edlContent += `${eventNum}  AX       V     C        ${tc} ${tcNext} ${tc} ${tcNext}\n`;
     edlContent += `* FROM CLIP:  DUMMY_CLIP\n`;
