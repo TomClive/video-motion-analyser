@@ -20,19 +20,20 @@ The app is designed for short AI-generated clips where the exported file may be 
 
 Video processing happens in the browser. Files are decoded with browser media APIs and analysed on local canvases. The app does not need to upload source videos to a server for analysis.
 
-Server requirements are light: this can be hosted as a static Vite site after running `npm run build`. Runtime server load is mostly serving HTML, CSS, JavaScript, and static assets. The heavy work is client CPU/GPU/browser memory on the visitor's machine.
+Server requirements are tiny: this is a no-build static site. Runtime server load is just serving `index.html`, `styles.css`, `app.js`, and any static assets you add later. The heavy work is client CPU/GPU/browser memory on the visitor's machine.
 
 ## Local Development
 
-```bash
-npm install
-npm run dev
-```
+Open `index.html` directly in a browser, or serve the folder with any static file server.
 
-## Production Build
+## GitHub Pages
 
-```bash
-npm run build
-```
+This repo can be hosted directly from GitHub Pages:
 
-Deploy the generated `dist/` folder to any static host, CDN, or existing web server.
+1. Open the repository settings on GitHub.
+2. Go to Pages.
+3. Set the source to deploy from the `main` branch.
+4. Set the folder to `/root`.
+5. Save.
+
+For a custom subdomain such as `videomotionanalyser.tomlikesrobots.com`, add the custom domain in GitHub Pages and point your DNS at the GitHub Pages target shown by GitHub.
