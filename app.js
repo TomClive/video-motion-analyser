@@ -14,6 +14,7 @@ let state = {
   currentIndex: 0,
   isPlaying: false,
   playbackInterval: null,
+  sourceFps: 24,
   playbackFps: 24,
   loop: true,
   
@@ -33,6 +34,8 @@ let state = {
   loadedFileName: '',
   loadedFileType: '', // 'video' | 'folder' | 'demo'
   originalVideoFile: null,
+  audioElement: null,
+  audioObjectUrl: null,
   
   // Comparison Tracking
   comparison: {
@@ -121,7 +124,8 @@ function setupEventListeners() {
   });
   
   document.getElementById('select-source-fps').addEventListener('change', (e) => {
-    state.playbackFps = parseInt(e.target.value, 10) || 24;
+    state.sourceFps = parseInt(e.target.value, 10) || 24;
+    state.playbackFps = state.sourceFps;
     document.getElementById('select-playback-fps').value = state.playbackFps.toString();
   });
   
@@ -295,6 +299,7 @@ function resizeTemporalStackCanvas() {
 // Reset UI state to start
 function resetApp() {
   pause();
+  cleanupPlaybackAudio();
   state.originalFrames = [];
   state.frames = [];
   state.diffs = [];
@@ -304,6 +309,7 @@ function resetApp() {
   state.timelineVizMode = 'curve';
   state.timelineMaximized = false;
   state.stackScale = 1.25;
+  state.sourceFps = 24;
   state.playbackFps = 24;
   state.loadedFileName = '';
   state.loadedFileType = '';
@@ -589,6 +595,8 @@ async function traverseDirectory(directoryEntry) {
 
 // Handle folder of image frames
 function handleFolderUpload(fileList) {
+  cleanupPlaybackAudio();
+  state.originalVideoFile = null;
   showLoader("Loading Image Sequence...", "Sorting frames");
   
   // Filter out non-images and sort alphabetically by file name
@@ -680,14 +688,17 @@ function loadImageFromFile(file) {
 
 // Decode Video frame-by-frame
 async function handleVideoFile(file) {
+  cleanupPlaybackAudio();
   state.loadedFileName = file.name;
   state.loadedFileType = 'video';
   state.originalVideoFile = file;
   
   try {
     const fps = parseInt(document.getElementById('select-source-fps').value, 10) || 24;
+    state.sourceFps = fps;
     state.playbackFps = fps;
     document.getElementById('select-playback-fps').value = fps.toString();
+    setupPlaybackAudio(file);
     state.originalFrames = await decodeVideoToFrames(file, fps, "Decoding Video File...");
     finishFrameLoading();
   } catch (err) {
@@ -772,8 +783,10 @@ function decodeVideoToFrames(file, fps, loaderTitle) {
 
 // Generate an in-memory synthetic animation sequence (DEMO)
 async function loadDemoSequence() {
+  cleanupPlaybackAudio();
   state.loadedFileName = "SeeDance_Demo_Clip";
   state.loadedFileType = 'demo';
+  state.originalVideoFile = null;
   
   showLoader("Generating Demo Sequence...", "Initializing shapes");
   
@@ -1462,6 +1475,7 @@ function selectFrame(index) {
   renderViewport();
   renderInspector();
   renderTimelineVisualisation();
+  syncPlaybackAudio(state.isPlaying, false);
 }
 
 // Render the main display canvas
@@ -1874,15 +1888,16 @@ function drawTemporalStack() {
   const img = state.frames[state.currentIndex].img;
   const aspect = img.width / Math.max(img.height, 1);
   const stackScale = state.stackScale || 1;
-  const baseCardH = Math.max(54, Math.min(h * 0.78, 150 * stackScale, h * 0.34 * stackScale));
-  const baseCardW = Math.max(52, Math.min(w * 0.36, baseCardH * aspect));
+  const maxCardW = w * 0.78;
+  const maxCardH = h * 0.84;
+  const baseCardH = Math.max(54, Math.min(150 * stackScale, maxCardH, maxCardW / aspect));
+  const baseCardW = baseCardH * aspect;
   const stepX = Math.max(12, Math.min(42, w / 58)) * Math.min(stackScale, 2.6);
   const stepY = -Math.max(5, Math.min(20, h / 46)) * Math.min(stackScale, 2.6);
-  const before = Math.min(Math.max(10, Math.round(16 / stackScale)), state.currentIndex);
   const after = Math.min(Math.max(16, Math.round(32 / stackScale)), state.frames.length - state.currentIndex - 1);
-  const start = state.currentIndex - before;
+  const start = state.currentIndex;
   const end = state.currentIndex + after;
-  const centerX = w * 0.42;
+  const centerX = w * 0.24;
   const centerY = h * 0.56;
 
   temporalStackHitboxes = [];
@@ -1969,7 +1984,7 @@ function drawTemporalStack() {
   temporalStackCtx.fillStyle = '#cfd4ff';
   temporalStackCtx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
   temporalStackCtx.fillText(
-    `Frame ${String(state.currentIndex).padStart(4, '0')} / ${state.frames.length - 1}  |  Use Play + FPS for motion`,
+    `Frame ${String(state.currentIndex).padStart(4, '0')} / ${state.frames.length - 1}  |  Future frames only`,
     22,
     h - 19
   );
@@ -1978,6 +1993,64 @@ function drawTemporalStack() {
 // -------------------------------------------------------------
 // PLAYBACK SYSTEM
 // -------------------------------------------------------------
+
+function setupPlaybackAudio(file) {
+  cleanupPlaybackAudio();
+
+  const audio = document.createElement('video');
+  const objectUrl = URL.createObjectURL(file);
+  audio.src = objectUrl;
+  audio.preload = 'auto';
+  audio.playsInline = true;
+  audio.style.display = 'none';
+  document.body.appendChild(audio);
+
+  state.audioElement = audio;
+  state.audioObjectUrl = objectUrl;
+}
+
+function cleanupPlaybackAudio() {
+  if (state.audioElement) {
+    state.audioElement.pause();
+    state.audioElement.removeAttribute('src');
+    state.audioElement.load();
+    state.audioElement.remove();
+    state.audioElement = null;
+  }
+
+  if (state.audioObjectUrl) {
+    URL.revokeObjectURL(state.audioObjectUrl);
+    state.audioObjectUrl = null;
+  }
+}
+
+function syncPlaybackAudio(shouldPlay = false, forceSeek = true) {
+  const audio = state.audioElement;
+  if (!audio || state.loadedFileType !== 'video') return;
+
+  const sourceFps = state.sourceFps || 24;
+  const targetTime = state.currentIndex / sourceFps;
+  const playbackRatio = (state.playbackFps || sourceFps) / sourceFps;
+  const supportedRate = Math.min(4, Math.max(0.0625, playbackRatio));
+
+  if (forceSeek || Math.abs(audio.currentTime - targetTime) > 0.18) {
+    try {
+      audio.currentTime = targetTime;
+    } catch (err) {
+      console.warn('Could not sync playback audio time:', err);
+    }
+  }
+
+  audio.playbackRate = supportedRate;
+
+  if (shouldPlay && playbackRatio >= 0.0625) {
+    if (audio.paused) {
+      audio.play().catch(err => console.warn('Audio playback was blocked or unavailable:', err));
+    }
+  } else {
+    audio.pause();
+  }
+}
 
 function togglePlay() {
   if (state.isPlaying) {
@@ -1989,12 +2062,14 @@ function togglePlay() {
 
 function play() {
   if (state.frames.length === 0) return;
+  if (state.playbackInterval) clearInterval(state.playbackInterval);
   
   state.isPlaying = true;
   const playBtn = document.getElementById('btn-play-toggle');
   playBtn.textContent = "⏸";
   playBtn.classList.add('active');
   
+  syncPlaybackAudio(true, true);
   const intervalMs = 1000 / state.playbackFps;
   state.playbackInterval = setInterval(() => {
     selectFrame(state.currentIndex + 1);
@@ -2015,6 +2090,7 @@ function pause() {
     clearInterval(state.playbackInterval);
     state.playbackInterval = null;
   }
+  syncPlaybackAudio(false, false);
   
   if (state.frames.length > 0) {
     updateStatus("Paused", "success");
