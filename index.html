@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Motion Curve & Anomaly Analyser</title>
-  <meta name="description" content="A browser-based tool to inspect video motion cadence, duplicate frames, and temporal anomaly patterns.">
+  <meta name="description" content="A browser-based tool to inspect video motion cadence, low-motion frames, and temporal anomaly patterns.">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -15,22 +15,22 @@
       <div class="overlay-hero">
         <div class="overlay-logo">M</div>
         <h1 class="overlay-title">Video Motion Curve Analyser</h1>
-        <p class="overlay-subtitle">Inspect motion cadence, duplicate frames, and temporal anomalies.</p>
+        <p class="overlay-subtitle">Inspect motion cadence, low-motion frames, and temporal anomalies.</p>
       </div>
 
       <!-- Drag & Drop Area -->
       <div id="drop-zone-welcome" class="upload-zone">
         <div class="upload-icon">⚡</div>
         <div class="upload-title">Drop files or folders here</div>
-        <div class="upload-desc">Supports folder of image frames (PNG/JPG) or MP4/WebM video</div>
+        <div class="upload-desc">Use PNG/JPG frame folders for forensic checks. MP4/WebM is a quick browser preview.</div>
         <div class="upload-buttons">
           <label class="btn-file-select" for="file-input-welcome">
-            📁 Select Video
+            Video Preview
           </label>
           <input type="file" id="file-input-welcome" accept="video/*" style="display: none;">
           
           <label class="btn-file-select" for="folder-input-welcome">
-            📂 Select Folder
+            Frame Folder
           </label>
           <input type="file" id="folder-input-welcome" webkitdirectory directory multiple style="display: none;">
         </div>
@@ -51,7 +51,7 @@
           🔮 No footage on hand?
         </h3>
         <p class="mock-generator-desc">
-          Generate an in-memory demo sequence containing simulated motion, duplicate frames, and a hard temporal spike to inspect the analyser.
+          Generate an in-memory demo sequence containing simulated motion, low-motion frames, and a hard temporal spike to inspect the analyser.
         </p>
         <button id="btn-load-demo" class="btn-action primary">
           Load Interactive Demo Sequence
@@ -116,11 +116,11 @@
         <!-- Duplicate Threshold -->
         <div class="parameter-group">
           <div class="parameter-info">
-            <span class="parameter-label">Duplicate Threshold</span>
+            <span class="parameter-label">Low-Motion Threshold</span>
             <span id="val-dup-thresh" class="parameter-value">0.5%</span>
           </div>
           <input type="range" id="input-dup-thresh" class="parameter-input" min="0.05" max="3" step="0.05" value="0.5">
-          <p class="parameter-desc">Maximum frame difference to be classified as a duplicate (frozen) frame.</p>
+          <p class="parameter-desc">Maximum frame difference to be classified as low motion. Confirm exact duplicates with image-sequence import.</p>
         </div>
         
         <!-- Jump Threshold -->
@@ -146,7 +146,7 @@
         <div class="diagnostic-stats">
           <div id="stat-card-duplicates" class="stat-card">
             <div id="stat-duplicates-count" class="stat-num dup-color">0</div>
-            <div class="stat-label">Duplicates</div>
+            <div class="stat-label">Low Motion</div>
           </div>
           <div id="stat-card-jumps" class="stat-card">
             <div id="stat-jumps-count" class="stat-num jump-color">0</div>
@@ -358,7 +358,7 @@
             </div>
             <div class="legend-item">
               <div class="legend-dot duplicate"></div>
-              <span>Duplicate Frame</span>
+              <span>Possible Duplicate / Low Motion</span>
             </div>
             <div class="legend-item">
               <div class="legend-dot jump"></div>

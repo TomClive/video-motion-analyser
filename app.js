@@ -37,6 +37,7 @@ let state = {
   originalVideoFile: null,
   audioElement: null,
   audioObjectUrl: null,
+  cadenceReport: null,
   
   // Comparison Tracking
   comparison: {
@@ -324,6 +325,7 @@ function resetApp() {
   state.loadedFileName = '';
   state.loadedFileType = '';
   state.originalVideoFile = null;
+  state.cadenceReport = null;
   clearComparison(false);
   document.getElementById('select-source-fps').value = '24';
   document.getElementById('select-playback-fps').value = '24';
@@ -453,9 +455,9 @@ function renderFrameGrid() {
     if (isDuplicate) {
       const badge = document.createElement('span');
       badge.className = 'frame-tile-badge';
-      badge.textContent = 'DUP';
+      badge.textContent = classifyLowMotion(state.diffs[index] || 0).badge;
       tile.appendChild(badge);
-      tile.title = `Frame ${index}: duplicate of previous frame`;
+      tile.title = `Frame ${index}: ${classifyLowMotion(state.diffs[index] || 0).label}`;
     } else if (isJump) {
       tile.title = `Frame ${index}: cut / spike candidate`;
     } else {
@@ -967,21 +969,8 @@ function finishFrameLoading() {
   // Clone original frames into working frames
   state.frames = [...state.originalFrames];
   state.currentIndex = 0;
-  
-  // Adjust sidebar sequence metadata
-  const sideInfo = document.getElementById('sidebar-sequence-info');
-  sideInfo.innerHTML = `
-    <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; margin-top: 4px;">
-      <span style="color: var(--text-muted);">Name:</span>
-      <span style="font-weight: 500; word-break: break-all;">${state.loadedFileName}</span>
-      <span style="color: var(--text-muted);">Source:</span>
-      <span>${state.loadedFileType.toUpperCase()}</span>
-      <span style="color: var(--text-muted);">Frames:</span>
-      <span id="meta-frames-count" style="font-family: monospace;">${state.frames.length}</span>
-      <span style="color: var(--text-muted);">Resolution:</span>
-      <span style="font-family: monospace;">${state.frames[0].img.width}x${state.frames[0].img.height}</span>
-    </div>
-  `;
+  state.cadenceReport = null;
+  renderSequenceInfo();
   
   // Setup sizing
   viewportCanvas.width = state.frames[0].img.width;
@@ -1079,6 +1068,107 @@ function compareFrames(img1, img2) {
   const changedPixelPercentage = (changedPixels / numPixels) * 100;
   
   return Math.max(maePercentage, changedPixelPercentage * 0.6);
+}
+
+function getSourceTrustInfo() {
+  if (state.loadedFileType === 'folder') {
+    return {
+      label: 'TRUSTED FRAME SEQUENCE',
+      className: 'trusted',
+      description: 'Filename-ordered image frames. Recommended for forensic cadence checks.'
+    };
+  }
+
+  if (state.loadedFileType === 'video') {
+    return {
+      label: 'MP4 QUICK PREVIEW',
+      className: 'preview',
+      description: 'Browser timestamp seeking can repeat or snap frames. For claims about exact frames, extract PNGs with ffmpeg and load the folder.'
+    };
+  }
+
+  return {
+    label: 'DEMO',
+    className: 'demo',
+    description: 'Synthetic in-memory demo sequence.'
+  };
+}
+
+function renderSequenceInfo() {
+  const sideInfo = document.getElementById('sidebar-sequence-info');
+  if (!sideInfo || state.frames.length === 0) {
+    if (sideInfo) sideInfo.innerHTML = '<p>Please load a video or folder of frames to begin the analysis.</p>';
+    return;
+  }
+
+  const trust = getSourceTrustInfo();
+  const cadence = state.cadenceReport;
+  const firstFrameName = state.frames[0] && state.frames[0].name ? state.frames[0].name : 'n/a';
+
+  sideInfo.innerHTML = `
+    <div class="sequence-meta-grid">
+      <span>Name:</span>
+      <strong>${escapeHtml(state.loadedFileName)}</strong>
+      <span>Source:</span>
+      <strong>${state.loadedFileType.toUpperCase()}</strong>
+      <span>Frames:</span>
+      <strong id="meta-frames-count">${state.frames.length}</strong>
+      <span>Resolution:</span>
+      <strong>${state.frames[0].img.width}x${state.frames[0].img.height}</strong>
+      <span>First:</span>
+      <strong>${escapeHtml(firstFrameName)}</strong>
+    </div>
+    <div class="source-trust ${trust.className}">
+      <div>${trust.label}</div>
+      <p>${trust.description}</p>
+    </div>
+    ${cadence ? `
+      <div class="cadence-summary">
+        <div>3-frame cadence probe</div>
+        <p>Phase ${cadence.phase + 1}/3 has ${cadence.phaseCount} low-motion pair(s). Confidence: ${cadence.confidenceLabel}.</p>
+      </div>
+    ` : ''}
+  `;
+}
+
+function classifyLowMotion(diff) {
+  if (diff <= Math.min(0.08, state.dupThreshold * 0.2)) {
+    return {
+      label: 'Near Duplicate',
+      badge: 'DUP',
+      description: `Near-identical adjacent frame. Difference of ${diff.toFixed(3)}% is extremely low.`
+    };
+  }
+
+  if (diff <= state.dupThreshold * 0.5) {
+    return {
+      label: 'Possible Duplicate',
+      badge: 'LOW',
+      description: `Very low adjacent-frame motion. Difference of ${diff.toFixed(3)}% is below half the current low-motion threshold.`
+    };
+  }
+
+  return {
+    label: 'Low Motion',
+    badge: 'LOW',
+    description: `Low adjacent-frame motion. Difference of ${diff.toFixed(3)}% is below the current threshold.`
+  };
+}
+
+function getFrameSourceLabel(index) {
+  const frame = state.frames[index];
+  if (!frame) return '';
+
+  if (state.loadedFileType === 'folder') {
+    return `Source file: ${frame.name || `frame ${index}`}.`;
+  }
+
+  if (state.loadedFileType === 'video') {
+    const timestamp = index / (state.sourceFps || 24);
+    return `Browser MP4 sample: frame ${index} at ${timestamp.toFixed(3)}s.`;
+  }
+
+  return `Demo frame: ${frame.name || index}.`;
 }
 
 async function handleComparisonVideoFile(file) {
@@ -1262,7 +1352,7 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
-// Detect duplicates and abrupt temporal spikes.
+// Detect low-motion frames and abrupt temporal spikes.
 function detectAnomalies() {
   state.anomalies = [];
   
@@ -1270,10 +1360,11 @@ function detectAnomalies() {
   const jumpThresh = state.jumpThreshold;
   const total = state.frames.length;
   
-  let dupCount = 0;
+  let lowMotionCount = 0;
   let spikeCount = 0;
+  const lowMotionIndexes = [];
   
-  // 1. Identify Duplicates
+  // 1. Identify low-motion adjacent frame pairs.
   for (let i = 1; i < total; i++) {
     const diff = state.diffs[i];
     
@@ -1282,16 +1373,21 @@ function detectAnomalies() {
       if (state.frames[i].repaired || (state.frames[i-1] && state.frames[i-1].repaired)) {
         continue;
       }
+
+      const lowMotion = classifyLowMotion(diff);
       
       state.anomalies.push({
         index: i,
         type: 'duplicate',
+        subtype: lowMotion.label,
         severity: (dupThresh - diff) / dupThresh, // higher severity means closer to 0
-        description: `Identical frame sequence. Difference of ${diff.toFixed(3)}% is below threshold.`
+        description: lowMotion.description
       });
-      dupCount++;
+      lowMotionIndexes.push(i);
+      lowMotionCount++;
     }
   }
+  state.cadenceReport = getCadenceReport(lowMotionIndexes, 3);
   
   // 2. Identify abrupt temporal spikes using a local median rolling filter.
   // These are review candidates: they can be missing frames, intentional cuts, or angle changes.
@@ -1350,24 +1446,56 @@ function detectAnomalies() {
   state.anomalies.sort((a, b) => a.index - b.index);
   
   // Update UI Stats Cards
-  document.getElementById('stat-duplicates-count').textContent = dupCount;
+  document.getElementById('stat-duplicates-count').textContent = lowMotionCount;
   document.getElementById('stat-jumps-count').textContent = spikeCount;
   
   const dupCard = document.getElementById('stat-card-duplicates');
   const jumpCard = document.getElementById('stat-card-jumps');
   
-  if (dupCount > 0) dupCard.classList.add('has-issues');
+  if (lowMotionCount > 0) dupCard.classList.add('has-issues');
   else dupCard.classList.remove('has-issues');
   
   if (spikeCount > 0) jumpCard.classList.add('has-issues');
   else jumpCard.classList.remove('has-issues');
   
   // Build Sidebar List Panel
+  renderSequenceInfo();
   renderAnomalyList();
   if (state.timelineVizMode === 'contact-sheet') renderFrameGrid();
   
   // Redraw timeline track
   renderTimelineVisualisation();
+}
+
+function getCadenceReport(indexes, cadenceLength) {
+  if (!indexes || indexes.length < 6) return null;
+
+  const phaseCounts = new Array(cadenceLength).fill(0);
+  indexes.forEach(index => {
+    phaseCounts[index % cadenceLength]++;
+  });
+
+  let phase = 0;
+  for (let i = 1; i < phaseCounts.length; i++) {
+    if (phaseCounts[i] > phaseCounts[phase]) phase = i;
+  }
+
+  const sortedCounts = [...phaseCounts].sort((a, b) => b - a);
+  const phaseCount = phaseCounts[phase];
+  const ratio = phaseCount / indexes.length;
+  const margin = sortedCounts[0] - (sortedCounts[1] || 0);
+  const confidence = ratio >= 0.5 && margin >= 3
+    ? 'high'
+    : (ratio >= 0.4 && margin >= 2 ? 'medium' : 'low');
+
+  return {
+    phase,
+    phaseCount,
+    total: indexes.length,
+    phaseCounts,
+    confidence,
+    confidenceLabel: confidence.toUpperCase()
+  };
 }
 
 // Render the expandable list of anomalies in sidebar
@@ -1411,7 +1539,7 @@ function renderAnomalyList() {
     item.dataset.index = anomaly.index;
     
     const dotClass = anomaly.type === 'duplicate' ? 'duplicate' : 'jump';
-    const typeLabel = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Cut / Spike Candidate';
+    const typeLabel = anomaly.type === 'duplicate' ? (anomaly.subtype || 'Low Motion') : 'Cut / Spike Candidate';
     const padIndex = String(anomaly.index).padStart(4, '0');
     
     item.innerHTML = `
@@ -1598,10 +1726,11 @@ function renderInspector() {
     inspectorHeader.style.display = 'flex';
 
     if (selectedAnomaly.type === 'duplicate') {
+      const lowMotion = classifyLowMotion(selectedPrevMotion);
       inspectorHeader.className = "anomaly-type-title duplicate";
       inspectorDot.className = "report-dot duplicate";
-      inspectorType.textContent = "LOW-MOTION / DUPLICATE CANDIDATE";
-      inspectorDesc.textContent = `${selectedMetricSummary} This frame is visually very close to the previous frame and may indicate baked-in cadence stutter.`;
+      inspectorType.textContent = lowMotion.label.toUpperCase();
+      inspectorDesc.textContent = `${getFrameSourceLabel(currentIdx)} ${selectedMetricSummary} ${lowMotion.description} In MP4 quick-preview mode this may be affected by browser timestamp seeking; confirm exact frame identity with an extracted image sequence.`;
     } else {
       inspectorHeader.className = "anomaly-type-title jump";
       inspectorDot.className = "report-dot jump";
@@ -1976,7 +2105,7 @@ function drawTemporalStack() {
 
     temporalStackCtx.font = '10px ui-monospace, SFMono-Regular, Consolas, monospace';
     temporalStackCtx.fillStyle = isDuplicate ? 'rgba(88, 28, 135, 0.92)' : 'rgba(0, 0, 0, 0.68)';
-    const label = isDuplicate ? `DUP #${String(index).padStart(3, '0')}` : `#${String(index).padStart(3, '0')}`;
+    const label = isDuplicate ? `${classifyLowMotion(state.diffs[index] || 0).badge} #${String(index).padStart(3, '0')}` : `#${String(index).padStart(3, '0')}`;
     const labelW = temporalStackCtx.measureText(label).width + 12;
     temporalStackCtx.fillRect(x + 6, y + 6, labelW, 17);
     temporalStackCtx.fillStyle = '#f8fafc';
@@ -2988,7 +3117,7 @@ function exportResolveMarkers() {
   let csvContent = "Title,Description,Timecode,Color,Duration\n";
   
   state.anomalies.forEach(anomaly => {
-    const title = anomaly.type === 'duplicate' ? 'Duplicate Frame' : 'Cut / Spike Candidate';
+    const title = anomaly.type === 'duplicate' ? (anomaly.subtype || 'Low Motion') : 'Cut / Spike Candidate';
     const desc = anomaly.description.replace(/"/g, '""');
     const tc = frameToTimecode(anomaly.index, fps);
     const color = anomaly.type === 'duplicate' ? 'Blue' : 'Yellow';
@@ -3020,7 +3149,7 @@ function exportPremiereEDL() {
     const tc = frameToTimecode(anomaly.index, fps);
     const tcNext = frameToTimecode(anomaly.index + 1, fps);
     const color = anomaly.type === 'duplicate' ? 'BLUE' : 'YELLOW';
-    const label = anomaly.type === 'duplicate' ? 'DUPLICATE' : 'CUT / SPIKE';
+    const label = anomaly.type === 'duplicate' ? ((anomaly.subtype || 'LOW MOTION').toUpperCase()) : 'CUT / SPIKE';
     
     edlContent += `${eventNum}  AX       V     C        ${tc} ${tcNext} ${tc} ${tcNext}\n`;
     edlContent += `* FROM CLIP:  DUMMY_CLIP\n`;
