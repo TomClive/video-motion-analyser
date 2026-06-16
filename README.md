@@ -2,6 +2,8 @@
 
 A browser-based tool for inspecting video motion cadence, low-motion patterns, possible duplicate frames, and cut/spike candidates.
 
+Live demo: [videomotionanalyser.tomlikesrobots.com](https://videomotionanalyser.tomlikesrobots.com)
+
 The app is designed for short AI-generated clips where the exported file may be 24 FPS, but the visual cadence contains repeated frames. It decodes the video locally, samples adjacent-frame motion, and shows the result as a motion curve, chronological frame grid, and temporal stack playback.
 
 ## What It Does
