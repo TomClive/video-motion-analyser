@@ -39,6 +39,7 @@ let state = {
   loadedFileName: '',
   loadedFileType: '', // 'video' | 'folder' | 'demo'
   originalVideoFile: null,
+  fileIntelligence: null,
   audioElement: null,
   audioObjectUrl: null,
   cadenceReport: null,
@@ -258,6 +259,7 @@ function setupEventListeners() {
   // Analysis marker exporter bindings
   document.getElementById('btn-export-resolve-markers').addEventListener('click', exportResolveMarkers);
   document.getElementById('btn-export-premiere-edl').addEventListener('click', exportPremiereEDL);
+  document.getElementById('btn-export-file-report').addEventListener('click', exportFileIntelligenceReport);
   
   // Resize timeline canvas on window resize
   window.addEventListener('resize', () => {
@@ -357,6 +359,7 @@ function resetApp() {
   state.loadedFileName = '';
   state.loadedFileType = '';
   state.originalVideoFile = null;
+  state.fileIntelligence = null;
   state.cadenceReport = null;
   clearComparison(false);
   document.getElementById('select-source-fps').value = '24';
@@ -380,6 +383,7 @@ function resetApp() {
   setTimelineVizMode('curve');
   setTimelineMaximized(false);
   document.getElementById('frame-grid-container').innerHTML = '';
+  renderFileIntelligence();
   
   // Hide workspace items, show welcome overlay
   document.getElementById('welcome-overlay').classList.remove('hidden');
@@ -400,7 +404,7 @@ function setWorkspaceActive(active) {
     'btn-toggle-anomaly-list', 'btn-compare-video',
     'btn-viz-curve', 'btn-viz-contact-sheet', 'btn-viz-stack',
     'btn-toggle-timeline-max', 'input-stack-scale', 'input-stack-spacing',
-    'btn-export-resolve-markers', 'btn-export-premiere-edl'
+    'btn-export-resolve-markers', 'btn-export-premiere-edl', 'btn-export-file-report'
   ];
   
   elements.forEach(id => {
@@ -676,6 +680,8 @@ function handleFolderUpload(fileList) {
   
   state.loadedFileName = files[0].name.split('_')[0] || "sequence";
   state.loadedFileType = 'folder';
+  state.fileIntelligence = buildFolderSequenceIntelligence(files, state.sourceFps || 24);
+  renderFileIntelligence();
   
   loadFramesFromFiles(files);
 }
@@ -750,6 +756,289 @@ function loadImageFromFile(file) {
   });
 }
 
+async function buildVideoFileIntelligence(file, selectedFps) {
+  const metadata = await getBrowserVideoMetadata(file).catch(() => null);
+  const binary = await inspectBinaryFile(file).catch(() => ({ sha256: '', containerSignature: null }));
+  const duration = metadata && Number.isFinite(metadata.duration) ? metadata.duration : 0;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceType: 'video',
+    confidence: 'browser-triage',
+    file: {
+      name: file.name,
+      mimeType: file.type || 'unknown',
+      extension: getFileExtension(file.name),
+      containerHint: inferContainerFromFile(file.name, file.type),
+      sizeBytes: file.size,
+      lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+      sha256: binary.sha256,
+      hashAlgorithm: binary.sha256 ? 'SHA-256' : 'unavailable',
+      containerSignature: binary.containerSignature
+    },
+    browserVideo: {
+      durationSeconds: duration,
+      width: metadata ? metadata.width : 0,
+      height: metadata ? metadata.height : 0,
+      estimatedOverallBitrateBps: duration > 0 ? Math.round((file.size * 8) / duration) : 0,
+      selectedDecodeFps: selectedFps,
+      nativeFrameRate: 'unavailable in browser',
+      codec: 'unavailable in browser',
+      audioPresence: 'not exposed reliably by HTMLVideoElement'
+    },
+    decodedSequence: null,
+    checks: [
+      'Original file SHA-256 calculated in browser.',
+      'Top-level container signature is parsed from the original bytes where possible.',
+      'Bitrate is estimated from file size and duration.',
+      'Codec, GOP, packet timing, and embedded encoder tags require ffprobe, MediaInfo, or ExifTool.'
+    ]
+  };
+}
+
+function buildFolderSequenceIntelligence(files, selectedFps) {
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const extensionCounts = {};
+  files.forEach(file => {
+    const ext = getFileExtension(file.name) || 'unknown';
+    extensionCounts[ext] = (extensionCounts[ext] || 0) + 1;
+  });
+
+  const manifest = files.map(file => ({
+    name: file.name,
+    sizeBytes: file.size,
+    lastModified: file.lastModified || 0
+  }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceType: 'folder',
+    confidence: 'frame-sequence',
+    file: {
+      name: files[0] ? files[0].name.split('_')[0] || 'sequence' : 'sequence',
+      mimeType: 'image sequence',
+      extension: Object.keys(extensionCounts).join(', '),
+      containerHint: 'folder of still frames',
+      sizeBytes: totalBytes,
+      lastModified: files.reduce((latest, file) => Math.max(latest, file.lastModified || 0), 0)
+        ? new Date(files.reduce((latest, file) => Math.max(latest, file.lastModified || 0), 0)).toISOString()
+        : null,
+      sha256: hashText(JSON.stringify(manifest)),
+      hashAlgorithm: 'FNV-1a manifest fingerprint'
+    },
+    folderSequence: {
+      frameFileCount: files.length,
+      firstFrame: files[0] ? files[0].name : null,
+      lastFrame: files[files.length - 1] ? files[files.length - 1].name : null,
+      extensionCounts,
+      selectedFps,
+      estimatedDurationSeconds: selectedFps > 0 ? files.length / selectedFps : 0
+    },
+    decodedSequence: null,
+    checks: [
+      'Frame sequence order is filename-sorted.',
+      'Sequence fingerprint hashes names, sizes, and modification times, not full image bytes.',
+      'Image folders are preferred for cadence checks because they avoid browser video seeking ambiguity.'
+    ]
+  };
+}
+
+function buildDemoFileIntelligence() {
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceType: 'demo',
+    confidence: 'synthetic',
+    file: {
+      name: 'SeeDance_Demo_Clip',
+      mimeType: 'synthetic frames',
+      extension: 'png',
+      containerHint: 'in-memory demo',
+      sizeBytes: 0,
+      lastModified: null,
+      sha256: ''
+    },
+    decodedSequence: null,
+    checks: [
+      'Synthetic in-memory frames for UI and cadence testing.',
+      'Not suitable for source-file metadata or provenance inspection.'
+    ]
+  };
+}
+
+function updateDecodedFileIntelligence() {
+  if (!state.fileIntelligence || state.frames.length === 0) return;
+
+  const fps = state.sourceFps || 24;
+  const width = state.frames[0].img.width;
+  const height = state.frames[0].img.height;
+  const durationSeconds = fps > 0 ? state.frames.length / fps : 0;
+  const duplicateCount = state.anomalies.filter(a => a.type === 'duplicate').length;
+  const jumpCount = state.anomalies.filter(a => a.type === 'jump').length;
+  const artifactCount = state.anomalies.filter(a => a.type === 'artifact').length;
+  const avgDiff = state.diffs.length > 1
+    ? state.diffs.slice(1).reduce((sum, value) => sum + value, 0) / (state.diffs.length - 1)
+    : 0;
+
+  state.fileIntelligence.decodedSequence = {
+    frameCount: state.frames.length,
+    width,
+    height,
+    selectedFps: fps,
+    estimatedDurationSeconds: durationSeconds,
+    averageAdjacentMotionPct: avgDiff,
+    anomalySummary: {
+      lowMotion: duplicateCount,
+      cutOrSpike: jumpCount,
+      temporalArtifacts: artifactCount
+    },
+    cadenceReport: state.cadenceReport || null
+  };
+}
+
+function getBrowserVideoMetadata(file) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      video.removeAttribute('src');
+      video.load();
+    };
+
+    video.onloadedmetadata = () => {
+      const result = {
+        duration: video.duration,
+        width: video.videoWidth,
+        height: video.videoHeight
+      };
+      cleanup();
+      resolve(result);
+    };
+
+    video.onerror = () => {
+      cleanup();
+      reject(new Error('Unable to read browser video metadata'));
+    };
+
+    video.src = objectUrl;
+  });
+}
+
+async function inspectBinaryFile(blob) {
+  const buffer = await blob.arrayBuffer();
+  const sha256 = await hashArrayBuffer(buffer);
+  return {
+    sha256,
+    containerSignature: parseContainerSignature(buffer)
+  };
+}
+
+async function hashArrayBuffer(buffer) {
+  if (!window.crypto || !window.crypto.subtle) return '';
+  const digest = await window.crypto.subtle.digest('SHA-256', buffer);
+  return bufferToHex(digest);
+}
+
+function parseContainerSignature(buffer) {
+  if (!buffer || buffer.byteLength < 12) return null;
+
+  const view = new DataView(buffer);
+  const boxes = [];
+  let offset = 0;
+  const maxBoxes = 24;
+
+  while (offset + 8 <= view.byteLength && boxes.length < maxBoxes) {
+    const size32 = view.getUint32(offset);
+    const type = readAscii(view, offset + 4, 4);
+    let boxSize = size32;
+    let headerSize = 8;
+
+    if (!/^[\x20-\x7e]{4}$/.test(type)) break;
+    if (size32 === 1 && offset + 16 <= view.byteLength) {
+      boxSize = Number(view.getBigUint64(offset + 8));
+      headerSize = 16;
+    } else if (size32 === 0) {
+      boxSize = view.byteLength - offset;
+    }
+
+    if (boxSize < headerSize || offset + boxSize > view.byteLength) break;
+
+    boxes.push({ type, size: boxSize });
+    offset += boxSize;
+  }
+
+  const ftyp = boxes.find(box => box.type === 'ftyp');
+  if (ftyp) {
+    const majorBrand = readAscii(view, 8, 4);
+    const minorVersion = view.byteLength >= 16 ? view.getUint32(12) : 0;
+    const compatibleBrands = [];
+    const end = Math.min(ftyp.size, view.byteLength);
+    for (let pos = 16; pos + 4 <= end; pos += 4) {
+      compatibleBrands.push(readAscii(view, pos, 4));
+    }
+
+    return {
+      family: 'ISO base media / QuickTime-style boxes',
+      majorBrand,
+      minorVersion,
+      compatibleBrands,
+      topLevelBoxes: boxes
+    };
+  }
+
+  return boxes.length > 0 ? { family: 'box-structured media', topLevelBoxes: boxes } : null;
+}
+
+function readAscii(view, offset, length) {
+  let value = '';
+  for (let i = 0; i < length && offset + i < view.byteLength; i++) {
+    value += String.fromCharCode(view.getUint8(offset + i));
+  }
+  return value;
+}
+
+function hashText(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `manifest-fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function bufferToHex(buffer) {
+  return Array.from(new Uint8Array(buffer))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function getFileExtension(name) {
+  const match = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : '';
+}
+
+function inferContainerFromFile(name, mimeType) {
+  const ext = getFileExtension(name);
+  const map = {
+    mp4: 'MPEG-4 / ISO BMFF',
+    m4v: 'MPEG-4 / ISO BMFF',
+    mov: 'QuickTime / MOV',
+    webm: 'WebM / Matroska family',
+    mkv: 'Matroska',
+    avi: 'AVI',
+    mts: 'MPEG transport stream',
+    m2ts: 'MPEG transport stream'
+  };
+
+  if (map[ext]) return map[ext];
+  if (mimeType) return mimeType;
+  return 'unknown';
+}
+
 // Decode Video frame-by-frame
 async function handleVideoFile(file) {
   cleanupPlaybackAudio();
@@ -762,6 +1051,9 @@ async function handleVideoFile(file) {
     state.sourceFps = fps;
     state.playbackFps = fps;
     document.getElementById('select-playback-fps').value = fps.toString();
+    showLoader("Inspecting File...", "Reading browser metadata and SHA-256");
+    state.fileIntelligence = await buildVideoFileIntelligence(file, fps);
+    renderFileIntelligence();
     setupPlaybackAudio(file);
     state.originalFrames = await decodeVideoToFrames(file, fps, "Decoding Video File...");
     finishFrameLoading();
@@ -851,6 +1143,8 @@ async function loadDemoSequence() {
   state.loadedFileName = "SeeDance_Demo_Clip";
   state.loadedFileType = 'demo';
   state.originalVideoFile = null;
+  state.fileIntelligence = buildDemoFileIntelligence();
+  renderFileIntelligence();
   
   showLoader("Generating Demo Sequence...", "Initializing shapes");
   
@@ -1020,6 +1314,8 @@ function finishFrameLoading() {
   state.frames = [...state.originalFrames];
   state.currentIndex = 0;
   state.cadenceReport = null;
+  updateDecodedFileIntelligence();
+  renderFileIntelligence();
   renderSequenceInfo();
   
   // Setup sizing
@@ -1218,6 +1514,134 @@ function getSourceTrustInfo() {
     className: 'demo',
     description: 'Synthetic in-memory demo sequence.'
   };
+}
+
+function renderFileIntelligence() {
+  const panel = document.getElementById('file-intelligence-panel');
+  const exportButton = document.getElementById('btn-export-file-report');
+  if (!panel) return;
+
+  if (!state.fileIntelligence) {
+    panel.className = 'file-intelligence-panel empty';
+    panel.textContent = 'Load a video or frame folder to inspect container, bitrate, resolution, timing, and provenance clues.';
+    if (exportButton) exportButton.disabled = true;
+    return;
+  }
+
+  const intel = state.fileIntelligence;
+  const file = intel.file || {};
+  const video = intel.browserVideo || {};
+  const folder = intel.folderSequence || {};
+  const decoded = intel.decodedSequence || {};
+  const signature = file.containerSignature || {};
+  const duration = video.durationSeconds || folder.estimatedDurationSeconds || decoded.estimatedDurationSeconds || 0;
+  const bitrate = video.estimatedOverallBitrateBps || 0;
+  const resolution = decoded.width && decoded.height
+    ? `${decoded.width}x${decoded.height}`
+    : (video.width && video.height ? `${video.width}x${video.height}` : 'n/a');
+  const fps = decoded.selectedFps || video.selectedDecodeFps || folder.selectedFps || state.sourceFps || 24;
+
+  const flags = [];
+  if (file.sha256) flags.push({ label: intel.sourceType === 'folder' ? 'Manifest Hash' : 'SHA-256', kind: 'ok' });
+  if (intel.sourceType === 'folder') flags.push({ label: 'Frame Sequence', kind: 'ok' });
+  if (intel.sourceType === 'video') flags.push({ label: 'Browser Triage', kind: 'warn' });
+  if (decoded.anomalySummary && decoded.anomalySummary.temporalArtifacts > 0) flags.push({ label: 'Artifacts Found', kind: 'warn' });
+  if (decoded.cadenceReport) flags.push({ label: 'Cadence Pattern', kind: 'warn' });
+
+  const rows = [
+    ['Container', file.containerHint || 'n/a'],
+    ['MIME', file.mimeType || 'n/a'],
+    ['Size', formatBytes(file.sizeBytes || 0)],
+    ['Modified', file.lastModified ? formatDateTime(file.lastModified) : 'n/a'],
+    ['Duration', duration ? formatDuration(duration) : 'n/a'],
+    ['Resolution', resolution],
+    ['FPS Basis', `${formatNumber(fps, 2)} selected`],
+    ['Frames', decoded.frameCount || folder.frameFileCount || 'n/a'],
+    ['Bitrate', bitrate ? formatBitrate(bitrate) : 'n/a'],
+    ['Hash', file.sha256 || 'n/a']
+  ];
+
+  if (intel.sourceType === 'video') {
+    rows.splice(1, 0, ['Codec', video.codec || 'unavailable in browser']);
+    rows.splice(2, 0, ['Native FPS', video.nativeFrameRate || 'unavailable in browser']);
+    rows.splice(3, 0, ['Audio', video.audioPresence || 'unknown']);
+    if (signature.majorBrand) rows.splice(3, 0, ['Brand', signature.majorBrand]);
+    if (signature.topLevelBoxes && signature.topLevelBoxes.length > 0) {
+      rows.splice(4, 0, ['Boxes', signature.topLevelBoxes.slice(0, 6).map(box => box.type).join(', ')]);
+    }
+  }
+
+  panel.className = 'file-intelligence-panel';
+  panel.innerHTML = `
+    <div class="file-intel-flags">
+      ${flags.map(flag => `<span class="file-intel-flag ${flag.kind}">${escapeHtml(flag.label)}</span>`).join('')}
+    </div>
+    <div class="file-intel-grid">
+      ${rows.map(([label, value]) => `
+        <span>${escapeHtml(label)}:</span>
+        <strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong>
+      `).join('')}
+    </div>
+    <div class="file-intel-note">
+      ${escapeHtml(getFileIntelligenceNote(intel))}
+    </div>
+  `;
+
+  if (exportButton) exportButton.disabled = false;
+}
+
+function getFileIntelligenceNote(intel) {
+  if (intel.sourceType === 'folder') {
+    return 'Folder checks use filename order and a manifest fingerprint. They are strongest for visual cadence, not original container provenance.';
+  }
+
+  if (intel.sourceType === 'video') {
+    return 'Browser metadata covers quick triage only. Codec profile, GOP, packet timestamps, encoder tags, and true variable frame timing need ffprobe, MediaInfo, or ExifTool.';
+  }
+
+  return 'Demo values describe synthetic in-memory frames, not an original media file.';
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${formatNumber(value, value >= 100 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatBitrate(bitsPerSecond) {
+  if (!bitsPerSecond) return 'n/a';
+  if (bitsPerSecond >= 1000000) return `${formatNumber(bitsPerSecond / 1000000, 2)} Mb/s`;
+  if (bitsPerSecond >= 1000) return `${formatNumber(bitsPerSecond / 1000, 1)} kb/s`;
+  return `${Math.round(bitsPerSecond)} b/s`;
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'n/a';
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds - minutes * 60;
+  return minutes > 0
+    ? `${minutes}m ${formatNumber(secs, 2)}s`
+    : `${formatNumber(secs, 3)}s`;
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'n/a';
+  return date.toLocaleString();
+}
+
+function formatNumber(value, decimals = 2) {
+  if (!Number.isFinite(Number(value))) return 'n/a';
+  return Number(value).toLocaleString(undefined, {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: 0
+  });
 }
 
 function renderSequenceInfo() {
@@ -1628,6 +2052,8 @@ function detectAnomalies() {
   else artifactCard.classList.remove('has-issues');
   
   // Build Sidebar List Panel
+  updateDecodedFileIntelligence();
+  renderFileIntelligence();
   renderSequenceInfo();
   renderAnomalyList();
   if (state.timelineVizMode === 'contact-sheet') renderFrameGrid();
@@ -3372,6 +3798,66 @@ function getAnomalyMarkerColor(anomaly, format = 'resolve') {
   if (anomaly.type === 'duplicate') return format === 'edl' ? 'BLUE' : 'Blue';
   if (anomaly.type === 'artifact') return format === 'edl' ? 'RED' : 'Red';
   return format === 'edl' ? 'YELLOW' : 'Yellow';
+}
+
+function exportFileIntelligenceReport() {
+  if (!state.fileIntelligence) {
+    alert("Load a sequence before exporting a file report.");
+    return;
+  }
+
+  updateDecodedFileIntelligence();
+  const report = {
+    app: {
+      name: 'Video Motion Analyser',
+      reportType: 'file-intelligence',
+      generatedAt: new Date().toISOString()
+    },
+    source: state.fileIntelligence,
+    motionAnalysis: {
+      frameCount: state.frames.length,
+      sourceFps: state.sourceFps,
+      playbackFps: state.playbackFps,
+      lowMotionThresholdPct: state.dupThreshold,
+      cutSpikeSensitivity: state.jumpThreshold,
+      artifactSensitivity: state.artifactThreshold,
+      cadenceReport: state.cadenceReport,
+      anomalyCounts: {
+        lowMotion: state.anomalies.filter(a => a.type === 'duplicate').length,
+        cutOrSpike: state.anomalies.filter(a => a.type === 'jump').length,
+        temporalArtifacts: state.anomalies.filter(a => a.type === 'artifact').length
+      },
+      anomalies: state.anomalies.map(anomaly => ({
+        index: anomaly.index,
+        type: anomaly.type,
+        label: getAnomalyLabel(anomaly),
+        severity: anomaly.severity,
+        description: anomaly.description
+      }))
+    },
+    limitations: [
+      'Browser video metadata does not expose codec profile, GOP structure, packet timestamps, encoder tags, or reliable audio stream presence.',
+      'Estimated bitrate is calculated from file size divided by browser-reported duration.',
+      'For forensic-grade metadata comparison, verify with ffprobe, MediaInfo, and ExifTool against the original file.'
+    ]
+  };
+
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  const baseName = getReportBaseName();
+  link.download = `${baseName}_file_intelligence.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+function getReportBaseName() {
+  const name = state.loadedFileName || 'sequence';
+  const lastDot = name.lastIndexOf('.');
+  const base = lastDot > 0 ? name.substring(0, lastDot) : name;
+  return base.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'sequence';
 }
 
 // Export DaVinci Resolve Markers (CSV format)
