@@ -133,6 +133,31 @@
           <p class="parameter-desc">Flags abrupt transitions for review. These may be real cuts, angle changes, or dropped-frame spikes.</p>
         </div>
 
+        <div class="parameter-group">
+          <div class="parameter-info">
+            <span class="parameter-label">Artifact Sensitivity</span>
+            <span id="val-artifact-thresh" class="parameter-value">2.2x</span>
+          </div>
+          <input type="range" id="input-artifact-thresh" class="parameter-input" min="1.2" max="5.0" step="0.1" value="2.2" disabled>
+          <p class="parameter-desc">Flags frames whose temporal residue is high against nearby motion. Use extracted frames for the most reliable review.</p>
+        </div>
+
+        <div class="parameter-group">
+          <div class="parameter-info">
+            <span class="parameter-label">Artifact Reveal Gain</span>
+            <span id="val-artifact-gain" class="parameter-value">7.0x</span>
+          </div>
+          <input type="range" id="input-artifact-gain" class="parameter-input" min="1" max="20" step="0.5" value="7" disabled>
+        </div>
+
+        <div class="parameter-group">
+          <div class="parameter-info">
+            <span class="parameter-label">Artifact Black Point</span>
+            <span id="val-artifact-black" class="parameter-value">10</span>
+          </div>
+          <input type="range" id="input-artifact-black" class="parameter-input" min="0" max="80" step="1" value="10" disabled>
+        </div>
+
         <button id="btn-reanalyze" class="btn-action secondary" style="margin-top: 12px; width: 100%;" disabled>
           🔄 Re-Analyze Sequence
         </button>
@@ -151,6 +176,10 @@
           <div id="stat-card-jumps" class="stat-card">
             <div id="stat-jumps-count" class="stat-num jump-color">0</div>
             <div class="stat-label">Cut / Spike</div>
+          </div>
+          <div id="stat-card-artifacts" class="stat-card">
+            <div id="stat-artifacts-count" class="stat-num artifact-color">0</div>
+            <div class="stat-label">Artifacts</div>
           </div>
         </div>
 
@@ -239,6 +268,7 @@
                 <button id="btn-view-normal" class="view-mode-btn active" disabled>Normal</button>
                 <button id="btn-view-onion" class="view-mode-btn" disabled>Onion</button>
                 <button id="btn-view-diff" class="view-mode-btn" disabled>Diff</button>
+                <button id="btn-view-artifact" class="view-mode-btn" disabled>Artifact</button>
               </div>
             </div>
 
@@ -363,6 +393,10 @@
             <div class="legend-item">
               <div class="legend-dot jump"></div>
               <span>Cut / Spike Candidate</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot artifact"></div>
+              <span>Temporal Artifact</span>
             </div>
             <div class="legend-item">
               <div class="legend-dot compare"></div>

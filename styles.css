@@ -24,6 +24,8 @@
   --warning-glow: rgba(245, 158, 11, 0.15);
   --danger: #ef4444;
   --danger-glow: rgba(239, 68, 68, 0.15);
+  --artifact: #ec4899;
+  --artifact-glow: rgba(236, 72, 153, 0.18);
   --duplicate-blue: #3b82f6;
   --duplicate-blue-glow: rgba(59, 130, 246, 0.15);
   
@@ -441,7 +443,7 @@ select.btn-file-select option {
 /* Diagnostic Reports List */
 .diagnostic-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 10px;
   flex-shrink: 0;
@@ -489,6 +491,21 @@ select.btn-file-select option {
   background: rgba(245, 158, 11, 0.03);
 }
 
+#stat-card-duplicates.has-issues {
+  border-color: rgba(59, 130, 246, 0.3);
+  background: rgba(59, 130, 246, 0.02);
+}
+
+#stat-card-jumps.has-issues {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.03);
+}
+
+#stat-card-artifacts.has-issues {
+  border-color: rgba(236, 72, 153, 0.35);
+  background: rgba(236, 72, 153, 0.035);
+}
+
 .stat-num {
   font-size: 20px;
   font-weight: 700;
@@ -501,6 +518,10 @@ select.btn-file-select option {
 
 .stat-num.jump-color {
   color: var(--warning);
+}
+
+.stat-num.artifact-color {
+  color: var(--artifact);
 }
 
 .stat-label {
@@ -666,6 +687,11 @@ select.btn-file-select option {
 .report-dot.jump {
   background: var(--warning);
   box-shadow: 0 0 6px var(--warning);
+}
+
+.report-dot.artifact {
+  background: var(--artifact);
+  box-shadow: 0 0 6px var(--artifact);
 }
 
 .report-dot.repaired {
@@ -1079,6 +1105,10 @@ select.btn-file-select option {
   color: var(--warning);
 }
 
+.anomaly-type-title.artifact {
+  color: var(--artifact);
+}
+
 .anomaly-type-title.repaired {
   color: var(--purple);
 }
@@ -1218,6 +1248,7 @@ select.btn-file-select option {
 .legend-dot.low { background: var(--warning); }
 .legend-dot.duplicate { background: var(--duplicate-blue); }
 .legend-dot.jump { background: var(--warning); }
+.legend-dot.artifact { background: var(--artifact); }
 .legend-dot.repaired { background: var(--purple); }
 .legend-dot.compare {
   background: var(--cyan);
@@ -1301,6 +1332,11 @@ select.btn-file-select option {
   border-color: rgba(245, 158, 11, 0.95);
 }
 
+.frame-tile.artifact {
+  border-color: rgba(236, 72, 153, 0.95);
+  box-shadow: 0 0 14px rgba(236, 72, 153, 0.22);
+}
+
 .frame-tile.active {
   border-color: var(--cyan);
   box-shadow: 0 0 0 1px var(--cyan), 0 0 18px rgba(34, 211, 238, 0.45);
@@ -1309,6 +1345,11 @@ select.btn-file-select option {
 .frame-tile.duplicate.active {
   border-color: var(--purple);
   box-shadow: 0 0 0 1px var(--cyan), 0 0 0 3px rgba(139, 92, 246, 0.55), 0 0 18px rgba(34, 211, 238, 0.4);
+}
+
+.frame-tile.artifact.active {
+  border-color: var(--artifact);
+  box-shadow: 0 0 0 1px var(--cyan), 0 0 0 3px rgba(236, 72, 153, 0.45), 0 0 18px rgba(34, 211, 238, 0.4);
 }
 
 .frame-tile img {

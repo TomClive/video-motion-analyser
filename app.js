@@ -8,7 +8,8 @@ let state = {
   originalFrames: [], // Array of { name, img, blob, file }
   frames: [],         // Active frames being analyzed
   diffs: [],          // Diff values between frames: diffs[i] is difference between frames[i-1] and frames[i]
-  anomalies: [],      // Detected anomalies: { index, type: 'duplicate'|'jump', severity, description }
+  artifactScores: [], // Temporal residual scores: scores[i] compares frame[i] against the average of its neighbours
+  anomalies: [],      // Detected anomalies: { index, type: 'duplicate'|'jump'|'artifact', severity, description }
   
   // Playback Control
   currentIndex: 0,
@@ -19,7 +20,7 @@ let state = {
   loop: true,
   
   // Viewer Options
-  viewMode: 'normal', // 'normal' | 'onion' | 'diff'
+  viewMode: 'normal', // 'normal' | 'onion' | 'diff' | 'artifact'
   timelineVizMode: 'curve', // 'curve' | 'contact-sheet' | 'stack'
   timelineMaximized: false,
   stackScale: 1.25,
@@ -30,6 +31,9 @@ let state = {
   // Analysis Parameters
   dupThreshold: 0.5,   // in % difference
   jumpThreshold: 2.5,  // multiplier of local median for cut/spike review candidates
+  artifactThreshold: 2.2, // multiplier of local median temporal residual
+  artifactGain: 7,
+  artifactBlackPoint: 10,
   
   // File Tracking
   loadedFileName: '',
@@ -161,6 +165,7 @@ function setupEventListeners() {
   document.getElementById('btn-view-normal').addEventListener('click', () => setViewMode('normal'));
   document.getElementById('btn-view-onion').addEventListener('click', () => setViewMode('onion'));
   document.getElementById('btn-view-diff').addEventListener('click', () => setViewMode('diff'));
+  document.getElementById('btn-view-artifact').addEventListener('click', () => setViewMode('artifact'));
   
   // Onion Opacity Slider
   const onionSlider = document.getElementById('input-onion-opacity');
@@ -184,6 +189,29 @@ function setupEventListeners() {
   jumpSlider.addEventListener('input', (e) => {
     state.jumpThreshold = parseFloat(e.target.value);
     jumpDisplay.textContent = `${state.jumpThreshold.toFixed(1)}x`;
+  });
+
+  const artifactSlider = document.getElementById('input-artifact-thresh');
+  const artifactDisplay = document.getElementById('val-artifact-thresh');
+  artifactSlider.addEventListener('input', (e) => {
+    state.artifactThreshold = parseFloat(e.target.value);
+    artifactDisplay.textContent = `${state.artifactThreshold.toFixed(1)}x`;
+  });
+
+  const artifactGainSlider = document.getElementById('input-artifact-gain');
+  const artifactGainDisplay = document.getElementById('val-artifact-gain');
+  artifactGainSlider.addEventListener('input', (e) => {
+    state.artifactGain = parseFloat(e.target.value);
+    artifactGainDisplay.textContent = `${state.artifactGain.toFixed(1)}x`;
+    renderViewport();
+  });
+
+  const artifactBlackSlider = document.getElementById('input-artifact-black');
+  const artifactBlackDisplay = document.getElementById('val-artifact-black');
+  artifactBlackSlider.addEventListener('input', (e) => {
+    state.artifactBlackPoint = parseInt(e.target.value, 10);
+    artifactBlackDisplay.textContent = state.artifactBlackPoint.toString();
+    renderViewport();
   });
   
   document.getElementById('btn-reanalyze').addEventListener('click', () => {
@@ -313,6 +341,7 @@ function resetApp() {
   state.originalFrames = [];
   state.frames = [];
   state.diffs = [];
+  state.artifactScores = [];
   state.anomalies = [];
   state.currentIndex = 0;
   state.anomalyListExpanded = false;
@@ -320,6 +349,9 @@ function resetApp() {
   state.timelineMaximized = false;
   state.stackScale = 1.25;
   state.stackSpacing = 1;
+  state.artifactThreshold = 2.2;
+  state.artifactGain = 7;
+  state.artifactBlackPoint = 10;
   state.sourceFps = 24;
   state.playbackFps = 24;
   state.loadedFileName = '';
@@ -333,6 +365,18 @@ function resetApp() {
   document.getElementById('val-stack-scale').textContent = '125%';
   document.getElementById('input-stack-spacing').value = '100';
   document.getElementById('val-stack-spacing').textContent = '100%';
+  document.getElementById('input-artifact-thresh').value = '2.2';
+  document.getElementById('val-artifact-thresh').textContent = '2.2x';
+  document.getElementById('input-artifact-gain').value = '7';
+  document.getElementById('val-artifact-gain').textContent = '7.0x';
+  document.getElementById('input-artifact-black').value = '10';
+  document.getElementById('val-artifact-black').textContent = '10';
+  document.getElementById('stat-duplicates-count').textContent = '0';
+  document.getElementById('stat-jumps-count').textContent = '0';
+  document.getElementById('stat-artifacts-count').textContent = '0';
+  document.getElementById('stat-card-duplicates').classList.remove('has-issues');
+  document.getElementById('stat-card-jumps').classList.remove('has-issues');
+  document.getElementById('stat-card-artifacts').classList.remove('has-issues');
   setTimelineVizMode('curve');
   setTimelineMaximized(false);
   document.getElementById('frame-grid-container').innerHTML = '';
@@ -351,7 +395,8 @@ function setWorkspaceActive(active) {
   const elements = [
     'btn-reanalyze', 'btn-play-toggle', 'btn-play-first', 'btn-play-last', 
     'btn-play-prev', 'btn-play-next', 'btn-view-normal', 'btn-view-onion',
-    'btn-view-diff', 'select-playback-fps',
+    'btn-view-diff', 'btn-view-artifact', 'select-playback-fps',
+    'input-artifact-thresh', 'input-artifact-gain', 'input-artifact-black',
     'btn-toggle-anomaly-list', 'btn-compare-video',
     'btn-viz-curve', 'btn-viz-contact-sheet', 'btn-viz-stack',
     'btn-toggle-timeline-max', 'input-stack-scale', 'input-stack-spacing',
@@ -426,6 +471,7 @@ function renderFrameGrid() {
 
   const duplicateIndexes = new Set(state.anomalies.filter(a => a.type === 'duplicate').map(a => a.index));
   const jumpIndexes = new Set(state.anomalies.filter(a => a.type === 'jump').map(a => a.index));
+  const artifactIndexes = new Set(state.anomalies.filter(a => a.type === 'artifact').map(a => a.index));
   const grid = document.createElement('div');
   grid.className = 'frame-grid';
 
@@ -437,8 +483,10 @@ function renderFrameGrid() {
 
     const isDuplicate = duplicateIndexes.has(index);
     const isJump = jumpIndexes.has(index);
+    const isArtifact = artifactIndexes.has(index);
     if (isDuplicate) tile.classList.add('duplicate');
     if (isJump) tile.classList.add('jump');
+    if (isArtifact) tile.classList.add('artifact');
     if (index === state.currentIndex) tile.classList.add('active');
 
     const img = document.createElement('img');
@@ -460,6 +508,8 @@ function renderFrameGrid() {
       tile.title = `Frame ${index}: ${classifyLowMotion(state.diffs[index] || 0).label}`;
     } else if (isJump) {
       tile.title = `Frame ${index}: cut / spike candidate`;
+    } else if (isArtifact) {
+      tile.title = `Frame ${index}: temporal artifact candidate`;
     } else {
       tile.title = `Frame ${index}`;
     }
@@ -1004,6 +1054,7 @@ async function analyzeSequence() {
   
   showLoader("Analyzing Motion Curve...", "Computing frame deltas");
   state.diffs = await calculateDiffsForFrames(state.frames, "Analyzing frame differences...");
+  state.artifactScores = await calculateArtifactScoresForFrames(state.frames, "Scanning temporal artifacts...");
   
   // Trigger anomaly detection logic
   detectAnomalies();
@@ -1068,6 +1119,81 @@ function compareFrames(img1, img2) {
   const changedPixelPercentage = (changedPixels / numPixels) * 100;
   
   return Math.max(maePercentage, changedPixelPercentage * 0.6);
+}
+
+async function calculateArtifactScoresForFrames(frames, progressTitle) {
+  const total = frames.length;
+  const scores = Array.from({ length: total }, () => ({
+    score: 0,
+    residual: 0,
+    coverage: 0,
+    baseline: 0
+  }));
+
+  if (total < 3) return scores;
+
+  for (let i = 1; i < total - 1; i++) {
+    if (i % 10 === 0) {
+      updateLoaderProgress(i / total, progressTitle, `Frame ${i} of ${total}`);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    scores[i] = compareFrameToNeighbourAverage(frames[i - 1].img, frames[i].img, frames[i + 1].img);
+  }
+
+  return scores;
+}
+
+function compareFrameToNeighbourAverage(prevImg, currImg, nextImg) {
+  const w = analysisCanvas.width;
+  const h = analysisCanvas.height;
+  const numPixels = w * h;
+
+  analysisCtx.drawImage(prevImg, 0, 0, w, h);
+  const prev = analysisCtx.getImageData(0, 0, w, h).data;
+
+  analysisCtx.drawImage(currImg, 0, 0, w, h);
+  const curr = analysisCtx.getImageData(0, 0, w, h).data;
+
+  analysisCtx.drawImage(nextImg, 0, 0, w, h);
+  const next = analysisCtx.getImageData(0, 0, w, h).data;
+
+  let residualSum = 0;
+  let baselineSum = 0;
+  let hotPixels = 0;
+
+  for (let i = 0; i < curr.length; i += 4) {
+    const expectedR = (prev[i] + next[i]) / 2;
+    const expectedG = (prev[i + 1] + next[i + 1]) / 2;
+    const expectedB = (prev[i + 2] + next[i + 2]) / 2;
+
+    const residualR = Math.abs(curr[i] - expectedR);
+    const residualG = Math.abs(curr[i + 1] - expectedG);
+    const residualB = Math.abs(curr[i + 2] - expectedB);
+    const residual = (residualR + residualG + residualB) / 3;
+
+    const baseline = (
+      Math.abs(prev[i] - next[i]) +
+      Math.abs(prev[i + 1] - next[i + 1]) +
+      Math.abs(prev[i + 2] - next[i + 2])
+    ) / 3;
+
+    residualSum += residual;
+    baselineSum += baseline;
+    if (residual > 18 && residual > baseline * 0.65) hotPixels++;
+  }
+
+  const residualPct = (residualSum / numPixels / 255) * 100;
+  const baselinePct = (baselineSum / numPixels / 255) * 100;
+  const coveragePct = (hotPixels / numPixels) * 100;
+  const score = (residualPct + coveragePct * 0.35) / Math.max(0.25, baselinePct * 0.55);
+
+  return {
+    score,
+    residual: residualPct,
+    coverage: coveragePct,
+    baseline: baselinePct
+  };
 }
 
 function getSourceTrustInfo() {
@@ -1362,6 +1488,7 @@ function detectAnomalies() {
   
   let lowMotionCount = 0;
   let spikeCount = 0;
+  let artifactCount = 0;
   const lowMotionIndexes = [];
   
   // 1. Identify low-motion adjacent frame pairs.
@@ -1441,6 +1568,43 @@ function detectAnomalies() {
       }
     }
   }
+
+  // 3. Identify temporal image-integrity artifacts.
+  // This compares a frame against the average of its neighbours. Spikes here often reveal
+  // single-frame texture pops, warped detail, flashes, or local AI-generation damage.
+  for (let i = 1; i < total - 1; i++) {
+    const metric = state.artifactScores[i];
+    if (!metric) continue;
+
+    const surroundingScores = [];
+    for (let w = -windowRadius; w <= windowRadius; w++) {
+      const idx = i + w;
+      if (idx >= 1 && idx < total - 1 && idx !== i) {
+        const neighbourMetric = state.artifactScores[idx];
+        if (neighbourMetric && neighbourMetric.residual > 0) {
+          surroundingScores.push(neighbourMetric.score);
+        }
+      }
+    }
+
+    if (surroundingScores.length === 0) continue;
+
+    surroundingScores.sort((a, b) => a - b);
+    const localMedian = surroundingScores[Math.floor(surroundingScores.length / 2)] || 0.1;
+    const relativeScore = metric.score / Math.max(0.1, localMedian);
+    const alreadyCadenceFlagged = state.anomalies.some(a => a.index === i && (a.type === 'duplicate' || a.type === 'jump'));
+    const enoughSignal = metric.residual > 0.28 && metric.coverage > 0.18;
+
+    if (!alreadyCadenceFlagged && enoughSignal && relativeScore >= state.artifactThreshold) {
+      state.anomalies.push({
+        index: i,
+        type: 'artifact',
+        severity: relativeScore,
+        description: `Temporal artifact candidate. Residual is ${metric.residual.toFixed(2)}% across ${metric.coverage.toFixed(1)}% of sampled pixels (${relativeScore.toFixed(1)}x local residue). Use Artifact view and adjust reveal gain/black point to inspect the affected area.`
+      });
+      artifactCount++;
+    }
+  }
   
   // Sort anomalies by frame index
   state.anomalies.sort((a, b) => a.index - b.index);
@@ -1448,15 +1612,20 @@ function detectAnomalies() {
   // Update UI Stats Cards
   document.getElementById('stat-duplicates-count').textContent = lowMotionCount;
   document.getElementById('stat-jumps-count').textContent = spikeCount;
+  document.getElementById('stat-artifacts-count').textContent = artifactCount;
   
   const dupCard = document.getElementById('stat-card-duplicates');
   const jumpCard = document.getElementById('stat-card-jumps');
+  const artifactCard = document.getElementById('stat-card-artifacts');
   
   if (lowMotionCount > 0) dupCard.classList.add('has-issues');
   else dupCard.classList.remove('has-issues');
   
   if (spikeCount > 0) jumpCard.classList.add('has-issues');
   else jumpCard.classList.remove('has-issues');
+
+  if (artifactCount > 0) artifactCard.classList.add('has-issues');
+  else artifactCard.classList.remove('has-issues');
   
   // Build Sidebar List Panel
   renderSequenceInfo();
@@ -1538,8 +1707,8 @@ function renderAnomalyList() {
     item.className = `report-item ${state.currentIndex === anomaly.index ? 'active' : ''}`;
     item.dataset.index = anomaly.index;
     
-    const dotClass = anomaly.type === 'duplicate' ? 'duplicate' : 'jump';
-    const typeLabel = anomaly.type === 'duplicate' ? (anomaly.subtype || 'Low Motion') : 'Cut / Spike Candidate';
+    const dotClass = anomaly.type === 'duplicate' ? 'duplicate' : (anomaly.type === 'artifact' ? 'artifact' : 'jump');
+    const typeLabel = getAnomalyLabel(anomaly);
     const padIndex = String(anomaly.index).padStart(4, '0');
     
     item.innerHTML = `
@@ -1691,6 +1860,66 @@ function renderViewport() {
     pCtx.putImageData(imgDataCurr, 0, 0);
     viewportCtx.drawImage(pCanvas, 0, 0);
   }
+
+  else if (state.viewMode === 'artifact') {
+    onionSliderContainer.style.display = 'none';
+
+    if (state.currentIndex === 0 || state.currentIndex >= state.frames.length - 1) {
+      viewportCtx.drawImage(img, 0, 0);
+      return;
+    }
+
+    drawArtifactReveal(
+      state.frames[state.currentIndex - 1].img,
+      img,
+      state.frames[state.currentIndex + 1].img,
+      viewportCanvas,
+      viewportCtx
+    );
+  }
+}
+
+function drawArtifactReveal(prevImg, currImg, nextImg, targetCanvas, targetCtx) {
+  const w = targetCanvas.width;
+  const h = targetCanvas.height;
+  const pCanvas = document.createElement('canvas');
+  pCanvas.width = w;
+  pCanvas.height = h;
+  const pCtx = pCanvas.getContext('2d', { willReadFrequently: true });
+
+  pCtx.drawImage(prevImg, 0, 0, w, h);
+  const prev = pCtx.getImageData(0, 0, w, h).data;
+
+  pCtx.drawImage(currImg, 0, 0, w, h);
+  const revealData = pCtx.getImageData(0, 0, w, h);
+  const curr = revealData.data;
+
+  pCtx.drawImage(nextImg, 0, 0, w, h);
+  const next = pCtx.getImageData(0, 0, w, h).data;
+
+  const gain = state.artifactGain;
+  const blackPoint = state.artifactBlackPoint;
+
+  for (let i = 0; i < curr.length; i += 4) {
+    const expectedR = (prev[i] + next[i]) / 2;
+    const expectedG = (prev[i + 1] + next[i + 1]) / 2;
+    const expectedB = (prev[i + 2] + next[i + 2]) / 2;
+
+    const residualR = Math.abs(curr[i] - expectedR);
+    const residualG = Math.abs(curr[i + 1] - expectedG);
+    const residualB = Math.abs(curr[i + 2] - expectedB);
+    const residual = Math.max(residualR, residualG, residualB);
+    const lifted = Math.max(0, residual - blackPoint) * gain;
+    const intensity = Math.min(255, lifted);
+
+    curr[i] = Math.min(255, intensity * 1.15 + residualR * gain * 0.25);
+    curr[i + 1] = Math.min(255, intensity * 0.12);
+    curr[i + 2] = Math.min(255, intensity * 0.8 + residualB * gain * 0.25);
+    curr[i + 3] = 255;
+  }
+
+  pCtx.putImageData(revealData, 0, 0);
+  targetCtx.drawImage(pCanvas, 0, 0);
 }
 
 // Render the right split panel detail thumbnails
@@ -1731,6 +1960,12 @@ function renderInspector() {
       inspectorDot.className = "report-dot duplicate";
       inspectorType.textContent = lowMotion.label.toUpperCase();
       inspectorDesc.textContent = `${getFrameSourceLabel(currentIdx)} ${selectedMetricSummary} ${lowMotion.description} In MP4 quick-preview mode this may be affected by browser timestamp seeking; confirm exact frame identity with an extracted image sequence.`;
+    } else if (selectedAnomaly.type === 'artifact') {
+      const metric = state.artifactScores[currentIdx] || { score: 0, residual: 0, coverage: 0 };
+      inspectorHeader.className = "anomaly-type-title artifact";
+      inspectorDot.className = "report-dot artifact";
+      inspectorType.textContent = "TEMPORAL ARTIFACT CANDIDATE";
+      inspectorDesc.textContent = `${selectedMetricSummary} Residual: ${metric.residual.toFixed(2)}%, coverage: ${metric.coverage.toFixed(1)}%, score: ${selectedAnomaly.severity.toFixed(1)}x local residue. Use Artifact view, then raise gain or lower black point to reveal small texture pops, flashes, or warped detail.`;
     } else {
       inspectorHeader.className = "anomaly-type-title jump";
       inspectorDot.className = "report-dot jump";
@@ -1940,8 +2175,11 @@ function drawTimeline() {
       } else {
         // Check if cut/spike review candidate
         const isJump = state.anomalies.find(a => a.index === i && a.type === 'jump');
+        const isArtifact = state.anomalies.find(a => a.index === i && a.type === 'artifact');
         if (isJump) {
           barColor = 'rgba(245, 158, 11, 0.85)'; // Amber (cut/spike candidate)
+        } else if (isArtifact) {
+          barColor = 'rgba(236, 72, 153, 0.9)'; // Pink (temporal artifact candidate)
         } else if (diff < state.dupThreshold * 2) {
           barColor = 'rgba(245, 158, 11, 0.5)'; // Yellow (low motion/near freeze)
         }
@@ -2026,6 +2264,7 @@ function drawTemporalStack() {
 
   const duplicateIndexes = new Set(state.anomalies.filter(a => a.type === 'duplicate').map(a => a.index));
   const jumpIndexes = new Set(state.anomalies.filter(a => a.type === 'jump').map(a => a.index));
+  const artifactIndexes = new Set(state.anomalies.filter(a => a.type === 'artifact').map(a => a.index));
   const img = state.frames[state.currentIndex].img;
   const aspect = img.width / Math.max(img.height, 1);
   const stackScale = state.stackScale || 1;
@@ -2070,6 +2309,7 @@ function drawTemporalStack() {
     const y = centerY + relative * stepY - cardH / 2;
     const isDuplicate = duplicateIndexes.has(index);
     const isJump = jumpIndexes.has(index);
+    const isArtifact = artifactIndexes.has(index);
     const isCurrent = index === state.currentIndex;
 
     if (x > w + 20 || x + cardW < -20 || y > h + 20 || y + cardH < -20) return;
@@ -2087,14 +2327,20 @@ function drawTemporalStack() {
       strokeColor = 'rgba(245, 158, 11, 0.95)';
       lineWidth = 2;
     }
+    if (isArtifact) {
+      strokeColor = 'rgba(236, 72, 153, 0.95)';
+      lineWidth = 3;
+    }
     if (isDuplicate) {
       strokeColor = '#8b5cf6';
       lineWidth = 4;
     }
     if (isCurrent) {
-      strokeColor = isDuplicate ? '#a78bfa' : '#22d3ee';
-      lineWidth = isDuplicate ? 5 : 3;
-      temporalStackCtx.shadowColor = isDuplicate ? 'rgba(139, 92, 246, 0.75)' : 'rgba(34, 211, 238, 0.65)';
+      strokeColor = isDuplicate ? '#a78bfa' : (isArtifact ? '#f472b6' : '#22d3ee');
+      lineWidth = isDuplicate ? 5 : (isArtifact ? 4 : 3);
+      temporalStackCtx.shadowColor = isDuplicate
+        ? 'rgba(139, 92, 246, 0.75)'
+        : (isArtifact ? 'rgba(236, 72, 153, 0.75)' : 'rgba(34, 211, 238, 0.65)');
       temporalStackCtx.shadowBlur = 14;
     }
 
@@ -2116,6 +2362,13 @@ function drawTemporalStack() {
       temporalStackCtx.fillRect(x + 6, y + 27, 42, 17);
       temporalStackCtx.fillStyle = '#111827';
       temporalStackCtx.fillText('SPIKE', x + 12, y + 39);
+    }
+
+    if (isArtifact) {
+      temporalStackCtx.fillStyle = 'rgba(236, 72, 153, 0.92)';
+      temporalStackCtx.fillRect(x + 6, y + 27, 32, 17);
+      temporalStackCtx.fillStyle = '#111827';
+      temporalStackCtx.fillText('ART', x + 12, y + 39);
     }
 
     temporalStackCtx.restore();
@@ -2243,7 +2496,7 @@ function pause() {
 function setViewMode(mode) {
   state.viewMode = mode;
   
-  const buttons = ['btn-view-normal', 'btn-view-onion', 'btn-view-diff'];
+  const buttons = ['btn-view-normal', 'btn-view-onion', 'btn-view-diff', 'btn-view-artifact'];
   buttons.forEach(id => {
     const btn = document.getElementById(id);
     if (id === `btn-view-${mode}`) btn.classList.add('active');
@@ -3109,6 +3362,18 @@ function frameToTimecode(frameIndex, fps) {
   return `${pad(h)}:${pad(m)}:${pad(s)}:${pad(f)}`;
 }
 
+function getAnomalyLabel(anomaly) {
+  if (anomaly.type === 'duplicate') return anomaly.subtype || 'Low Motion';
+  if (anomaly.type === 'artifact') return 'Temporal Artifact';
+  return 'Cut / Spike Candidate';
+}
+
+function getAnomalyMarkerColor(anomaly, format = 'resolve') {
+  if (anomaly.type === 'duplicate') return format === 'edl' ? 'BLUE' : 'Blue';
+  if (anomaly.type === 'artifact') return format === 'edl' ? 'RED' : 'Red';
+  return format === 'edl' ? 'YELLOW' : 'Yellow';
+}
+
 // Export DaVinci Resolve Markers (CSV format)
 function exportResolveMarkers() {
   if (state.frames.length === 0) return;
@@ -3117,10 +3382,10 @@ function exportResolveMarkers() {
   let csvContent = "Title,Description,Timecode,Color,Duration\n";
   
   state.anomalies.forEach(anomaly => {
-    const title = anomaly.type === 'duplicate' ? (anomaly.subtype || 'Low Motion') : 'Cut / Spike Candidate';
+    const title = getAnomalyLabel(anomaly);
     const desc = anomaly.description.replace(/"/g, '""');
     const tc = frameToTimecode(anomaly.index, fps);
-    const color = anomaly.type === 'duplicate' ? 'Blue' : 'Yellow';
+    const color = getAnomalyMarkerColor(anomaly);
     const duration = "00:00:00:01";
     
     csvContent += `"${title}","${desc}",${tc},${color},${duration}\n`;
@@ -3148,8 +3413,8 @@ function exportPremiereEDL() {
     const eventNum = String(i + 1).padStart(3, '0');
     const tc = frameToTimecode(anomaly.index, fps);
     const tcNext = frameToTimecode(anomaly.index + 1, fps);
-    const color = anomaly.type === 'duplicate' ? 'BLUE' : 'YELLOW';
-    const label = anomaly.type === 'duplicate' ? ((anomaly.subtype || 'LOW MOTION').toUpperCase()) : 'CUT / SPIKE';
+    const color = getAnomalyMarkerColor(anomaly, 'edl');
+    const label = getAnomalyLabel(anomaly).toUpperCase();
     
     edlContent += `${eventNum}  AX       V     C        ${tc} ${tcNext} ${tc} ${tcNext}\n`;
     edlContent += `* FROM CLIP:  DUMMY_CLIP\n`;
